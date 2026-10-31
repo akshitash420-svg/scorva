@@ -49,12 +49,24 @@ else
     echo -e "  • Status: $(format_status STOPPED) (Port: ${API_PORT} not listening)"
 fi
 
-# 3. Check Docker Infrastructure Containers
-echo -e "\n${BOLD}Infrastructure Containers (Docker):${NC}"
-if docker info >/dev/null 2>&1; then
+# 3. Check optional Docker infrastructure containers
+echo -e "\n${BOLD}Docker Infrastructure (optional):${NC}"
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     docker compose ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null || docker compose ps
 else
-    echo -e "  • Docker daemon is ${RED}NOT RUNNING${NC} or inaccessible."
+    echo -e "  • Docker is not installed or its daemon is not running (not required for local mode)."
+fi
+
+echo -e "\n${BOLD}Local Infrastructure Services:${NC}"
+if is_port_listening "$DB_PORT"; then
+    echo -e "  • PostgreSQL: $(format_status RUNNING) (Port: ${DB_PORT})"
+else
+    echo -e "  • PostgreSQL: $(format_status STOPPED) (Port: ${DB_PORT} not listening)"
+fi
+if is_port_listening "$REDIS_PORT"; then
+    echo -e "  • Redis:      $(format_status RUNNING) (Port: ${REDIS_PORT})"
+else
+    echo -e "  • Redis:      $(format_status STOPPED) (Port: ${REDIS_PORT} not listening)"
 fi
 
 # 4. Log Files Information

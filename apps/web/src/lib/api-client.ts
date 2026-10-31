@@ -124,7 +124,9 @@ export async function fetchApi<T>(
   const url = `${API_BASE_URL.replace(/\/$/, '')}/${endpoint.replace(/^\//, '')}`;
 
   const headers = new Headers(options.headers || {});
-  if (!headers.has('Content-Type')) {
+  if (typeof FormData !== 'undefined' && options.body instanceof FormData) {
+    headers.delete('Content-Type');
+  } else if (!headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json');
   }
 
@@ -1324,11 +1326,24 @@ export const api = {
   createParticipantSupportTicket: async (
     data: CreateSupportTicketRequest
   ): Promise<SupportTicketItem> => {
+    const formData = new FormData();
+    formData.set('category', data.category);
+    formData.set('team_name', data.team_name);
+    formData.set('subject', data.subject);
+    formData.set('description', data.description);
+    if (data.team_number) formData.set('team_number', data.team_number);
+    if (data.block_number) formData.set('block_number', data.block_number);
+    if (data.lab_number) formData.set('lab_number', data.lab_number);
+    if (data.hackathon_id) formData.set('hackathon_id', data.hackathon_id);
+    if (data.attachment) formData.set('attachment', data.attachment);
     return fetchApi<SupportTicketItem>('/api/v1/participant/support/tickets', {
       method: 'POST',
-      body: JSON.stringify(data),
+      body: formData,
     });
   },
+
+  getParticipantSupportTicketAttachmentUrl: (ticketId: string): string =>
+    `${API_BASE_URL.replace(/\/$/, '')}/api/v1/participant/support/tickets/${encodeURIComponent(ticketId)}/attachment`,
 
   getParticipantSupportTicketDetail: async (
     ticketId: string,

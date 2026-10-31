@@ -63,7 +63,7 @@ scorva/
 - **Node.js**: v18.0.0 or higher (v20+ recommended)
 - **npm**: v9.0.0 or higher
 - **Python**: v3.11 or higher
-- **Docker & Docker Compose**: v2.20+ (optional for local mock mode, required for full container stack)
+- **Homebrew** (macOS, for local PostgreSQL and Redis); Docker is optional
 
 ### 1. Environment Configuration
 
@@ -77,9 +77,20 @@ Review `.env` and adjust database, Redis, or API port configurations if needed.
 
 ---
 
-### 2. Option A: One-Command Start & Stop Scripts (Recommended)
+### 2. Install local dependencies (Docker-free)
 
-Start the entire platform (PostgreSQL, Redis, FastAPI backend, Next.js frontend):
+Install Homebrew PostgreSQL, Redis, Python API packages, and frontend packages, then create the local development database:
+
+```bash
+./scripts/setup.sh
+```
+
+This setup uses PostgreSQL at `localhost:5432` and Redis at `localhost:6379`; Docker is not required.
+If npm registry access is temporarily unavailable, use `./scripts/setup.sh --skip-frontend` to finish API and database setup, then run `npm ci --prefix apps/web` when connectivity is restored.
+
+### 3. Option A: One-Command Start & Stop Scripts (Recommended)
+
+Start PostgreSQL and Redis through Homebrew, then start the FastAPI backend and Next.js frontend:
 ```bash
 ./start.sh
 # or: npm start
@@ -105,13 +116,13 @@ Stop the platform and backing services cleanly:
 
 Options:
 - `./start.sh -f`: Start services and follow live logs in foreground.
-- `./start.sh -d`: Start complete containerized stack via Docker Compose.
-- `./stop.sh -k`: Stop API and Web servers while keeping database containers running.
-- `./stop.sh -c`: Stop and tear down all Docker containers (`docker compose down`).
+- `./start.sh -d`: Start the full containerized stack via Docker Compose (requires Docker).
+- `./stop.sh -k`: Stop API and Web servers while keeping PostgreSQL and Redis running.
+- `./stop.sh -c`: Stop and tear down Docker Compose containers (requires Docker).
 
 ---
 
-### 3. Option B: Run with Docker Compose Directly
+### 4. Option B: Run with Docker Compose Directly (optional)
 
 Start the entire platform stack (PostgreSQL, Redis, MinIO, Ollama, FastAPI Backend, and Next.js Web):
 
@@ -138,7 +149,7 @@ docker compose down
 
 ---
 
-### 3. Option B: Run Services Locally (Host Mode)
+### 5. Option C: Run Services Manually (Host Mode)
 
 #### Backend (FastAPI)
 

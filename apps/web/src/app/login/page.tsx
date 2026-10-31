@@ -20,6 +20,13 @@ import { useAuth } from '@/lib/auth-context';
 
 type AuthStep = 'credentials' | 'mfa_setup' | 'mfa_verify';
 
+const DEV_LOGIN_PERSONAS = [
+  { email: 'admin@scorva.io', password: 'Password123!', label: 'Super Admin (Direct Login)' },
+  { email: 'organizer@scorva.io', password: 'Password123!', label: 'Tenant Organizer' },
+  { email: 'judge@scorva.io', password: 'Password123!', label: 'Assigned Judge' },
+  { email: 'participant@scorva.io', password: 'Password123!', label: 'Team Participant' },
+] as const;
+
 function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -233,54 +240,24 @@ function LoginForm() {
                   Development Quick-Login Personas (Password: <code className="text-primary font-mono font-semibold">Password123!</code>):
                 </div>
                 <div className="grid grid-cols-2 gap-2 text-xs">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setEmail('admin@scorva.io');
-                      setPassword('Password123!');
-                      setError(null);
-                    }}
-                    className="p-2 text-left bg-surface-elevated hover:bg-surface-border/50 border border-surface-border rounded-lg transition-colors cursor-pointer"
-                  >
-                    <div className="font-medium text-text-primary truncate">admin@scorva.io</div>
-                    <div className="text-[10px] text-primary mt-0.5">Super Admin (Direct Login)</div>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setEmail('organizer@scorva.io');
-                      setPassword('Password123!');
-                      setError(null);
-                    }}
-                    className="p-2 text-left bg-surface-elevated hover:bg-surface-border/50 border border-surface-border rounded-lg transition-colors cursor-pointer"
-                  >
-                    <div className="font-medium text-text-primary truncate">organizer@scorva.io</div>
-                    <div className="text-[10px] text-text-muted mt-0.5">Tenant Organizer</div>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setEmail('judge@scorva.io');
-                      setPassword('Password123!');
-                      setError(null);
-                    }}
-                    className="p-2 text-left bg-surface-elevated hover:bg-surface-border/50 border border-surface-border rounded-lg transition-colors cursor-pointer"
-                  >
-                    <div className="font-medium text-text-primary truncate">judge@scorva.io</div>
-                    <div className="text-[10px] text-text-muted mt-0.5">Assigned Judge</div>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setEmail('participant@scorva.io');
-                      setPassword('Password123!');
-                      setError(null);
-                    }}
-                    className="p-2 text-left bg-surface-elevated hover:bg-surface-border/50 border border-surface-border rounded-lg transition-colors cursor-pointer"
-                  >
-                    <div className="font-medium text-text-primary truncate">participant@scorva.io</div>
-                    <div className="text-[10px] text-text-muted mt-0.5">Team Participant</div>
-                  </button>
+                  {DEV_LOGIN_PERSONAS.map((persona, index) => (
+                    <button
+                      key={persona.email}
+                      type="button"
+                      aria-label={`Use ${persona.label} credentials`}
+                      onClick={() => {
+                        setEmail(persona.email);
+                        setPassword(persona.password);
+                        setError(null);
+                      }}
+                      className="p-2 text-left bg-surface-elevated hover:bg-surface-border/50 border border-surface-border rounded-lg transition-colors cursor-pointer"
+                    >
+                      <div className="font-medium text-text-primary truncate">{persona.email}</div>
+                      <div className={`text-[10px] mt-0.5 ${index === 0 ? 'text-primary' : 'text-text-muted'}`}>
+                        {persona.label}
+                      </div>
+                    </button>
+                  ))}
                 </div>
               </div>
 

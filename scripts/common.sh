@@ -29,6 +29,8 @@ API_PORT=8000
 WEB_PORT=3000
 DB_PORT=5432
 REDIS_PORT=6379
+POSTGRES_SERVICE="postgresql@16"
+REDIS_SERVICE="redis"
 
 ensure_run_dirs() {
     mkdir -p "${PID_DIR}" "${LOG_DIR}"
@@ -116,36 +118,104 @@ ensure_env_file() {
     return 0
 }
 
-# Check dependencies
+add_homebrew_service_bins() {
+    if ! command -v brew >/dev/null 2>&1; then
+        return 0
+    fi
+
+    local formula prefix
+    for formula in "$POSTGRES_SERVICE" "$REDIS_SERVICE"; do
+        if brew list --versions "$formula" >/dev/null 2>&1; then
+            prefix="$(brew --prefix "$formula")"
+            PATH="${prefix}/bin:${PATH}"
+        fi
+    done
+    export PATH
+}
+
+# Check dependencies needed for the selected startup mode
 check_prerequisites() {
+    local mode="${1:-host}"
+    local start_api="${2:-1}"
+    local start_web="${3:-1}"
     local missing=0
 
-    if ! command -v docker >/dev/null 2>&1; then
-        log_error "Docker is not installed or not in PATH."
-        missing=1
+    if [ "$mode" = "docker" ]; then
+        if ! command -v docker >/dev/null 2>&1; then
+            log_error "Docker is required for --docker mode but is not installed or not in PATH."
+            missing=1
+        elif ! docker info >/dev/null 2>&1; then
+            log_error "Docker is installed but the Docker daemon is not running."
+            missing=1
+        fi
     fi
 
-    if ! command -v node >/dev/null 2>&1; then
-        log_error "Node.js is not installed or not in PATH."
-        missing=1
+    if [ "$start_web" -eq 1 ]; then
+        if ! command -v node >/dev/null 2>&1; then
+            log_error "Node.js is not installed or not in PATH."
+            missing=1
+        fi
+
+        if ! command -v npm >/dev/null 2>&1; then
+            log_error "npm is not installed or not in PATH."
+            missing=1
+        fi
+
+        if [ ! -d "${PROJECT_ROOT}/apps/web/node_modules" ]; then
+            log_error "Frontend dependencies are missing at apps/web/node_modules."
+            log_info "Run: npm ci --prefix apps/web"
+            missing=1
+        fi
     fi
 
-    if ! command -v npm >/dev/null 2>&1; then
-        log_error "npm is not installed or not in PATH."
-        missing=1
-    fi
-
-    if [ ! -d "${PROJECT_ROOT}/.venv" ]; then
-        log_error "Python virtualenv (.venv) not found at ${PROJECT_ROOT}/.venv."
-        log_info "Run: python3 -m venv .venv && .venv/bin/pip install -r apps/api/requirements.txt"
-        missing=1
-    fi
-
-    if [ ! -d "${PROJECT_ROOT}/apps/web/node_modules" ]; then
-        log_error "Frontend dependencies not installed at apps/web/node_modules."
-        log_info "Run: npm install --prefix apps/web"
-        missing=1
+    if [ "$start_api" -eq 1 ]; then
+        if ! command -v python3 >/dev/null 2>&1 && [ ! -x "${PROJECT_ROOT}/.venv/bin/python" ]; then
+            log_error "Python 3.11+ is required but was not found."
+            missing=1
+        fi
+        if [ ! -x "${PROJECT_ROOT}/.venv/bin/python" ]; then
+            log_error "Python virtual environment (.venv) is missing."
+            log_info "Run: ./scripts/setup.sh"
+            missing=1
+        fi
     fi
 
     return $missing
+}
+
+start_local_dependencies() {
+    local service port
+    add_homebrew_service_bins
+
+    for service in "$POSTGRES_SERVICE" "$REDIS_SERVICE"; do
+        if [ "$service" = "$POSTGRES_SERVICE" ]; then
+            port="$DB_PORT"
+        else
+            port="$REDIS_PORT"
+        fi
+
+        if is_port_listening "$port"; then
+            continue
+        fi
+
+        if ! command -v brew >/dev/null 2>&1 || ! brew list --versions "$service" >/dev/null 2>&1; then
+            log_error "${service} is not installed or not listening on port ${port}."
+            log_info "Run: ./scripts/setup.sh"
+            return 1
+        fi
+
+        log_step "Starting local ${service} service..."
+        brew services start "$service"
+
+        local timeout=30
+        while [ "$timeout" -gt 0 ] && ! is_port_listening "$port"; do
+            sleep 1
+            timeout=$((timeout - 1))
+        done
+        if ! is_port_listening "$port"; then
+            log_error "${service} did not become ready on port ${port}."
+            return 1
+        fi
+        log_success "${service} is listening on port ${port}."
+    done
 }

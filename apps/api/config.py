@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379/0"
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     S3_ENDPOINT_URL: str = "http://localhost:9000"
+    SUPPORT_ATTACHMENT_DIR: str = ".run/support-attachments"
 
     @field_validator("CORS_ORIGINS", "TRUSTED_PROXIES", mode="before")
     @classmethod

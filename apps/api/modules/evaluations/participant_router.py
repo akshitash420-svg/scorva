@@ -1,11 +1,13 @@
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Dict, List, Optional
+import os
+from pathlib import Path
 import uuid
-import secrets
 
 import httpx
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile, status
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select, text, and_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -176,6 +178,10 @@ class SupportTicketItem(BaseModel):
     id: uuid.UUID
     ticket_number: str
     category: str
+    team_name: str
+    team_number: Optional[str] = None
+    block_number: Optional[str] = None
+    lab_number: Optional[str] = None
     subject: str
     description: str
     status: str  # 'open' | 'in_progress' | 'waiting_response' | 'resolved' | 'closed'
@@ -183,6 +189,8 @@ class SupportTicketItem(BaseModel):
     created_at: datetime
     updated_at: datetime
     replies_count: int = 0
+    attachment_url: Optional[str] = None
+    attachment_name: Optional[str] = None
 
 
 class SupportReplyItem(BaseModel):
@@ -198,11 +206,72 @@ class SupportTicketDetailResponse(BaseModel):
     replies: List[SupportReplyItem] = Field(default_factory=list)
 
 
-class CreateSupportTicketRequest(BaseModel):
-    category: str = Field(..., min_length=2, max_length=50)
-    subject: str = Field(..., min_length=3, max_length=200)
-    description: str = Field(..., min_length=10, max_length=5000)
-    hackathon_id: Optional[uuid.UUID] = None
+SUPPORT_CATEGORIES = {
+    "Project Submission",
+    "GitHub / Repository Issue",
+    "Team & Member Issue",
+    "AI Evaluation / Judging",
+    "Results & Leaderboard",
+    "Account & Login",
+    "Event Related",
+    "Venue / Seating Query",
+    "Technical Issue",
+    "Other",
+}
+SUPPORT_BLOCKS = {f"Block {number}" for number in range(1, 11)}
+SUPPORT_ATTACHMENT_MAX_BYTES = 5 * 1024 * 1024
+SUPPORT_ATTACHMENT_TYPES = {
+    ".png": ("image/png", b"\x89PNG\r\n\x1a\n"),
+    ".jpg": ("image/jpeg", b"\xff\xd8\xff"),
+    ".jpeg": ("image/jpeg", b"\xff\xd8\xff"),
+    ".pdf": ("application/pdf", b"%PDF-"),
+}
+
+
+async def _read_support_attachment(upload: UploadFile) -> tuple[bytes, str, str]:
+    extension = Path(upload.filename or "").suffix.lower()
+    expected_type = SUPPORT_ATTACHMENT_TYPES.get(extension)
+    if expected_type is None:
+        raise AppException(
+            status_code=422,
+            code="UNSUPPORTED_ATTACHMENT_TYPE",
+            message="Attachment must be a PNG, JPG, JPEG, or PDF file.",
+        )
+
+    chunks: list[bytes] = []
+    total_bytes = 0
+    while chunk := await upload.read(64 * 1024):
+        total_bytes += len(chunk)
+        if total_bytes > SUPPORT_ATTACHMENT_MAX_BYTES:
+            raise AppException(
+                status_code=413,
+                code="ATTACHMENT_TOO_LARGE",
+                message="Attachment must be 5 MB or smaller.",
+            )
+        chunks.append(chunk)
+
+    content = b"".join(chunks)
+    mime_type, signature = expected_type
+    signature_matches = (
+        content.lstrip().startswith(signature)
+        if extension == ".pdf"
+        else content.startswith(signature)
+    )
+    if not content or not signature_matches:
+        raise AppException(
+            status_code=422,
+            code="INVALID_ATTACHMENT_CONTENT",
+            message="The selected file does not match its file type.",
+        )
+
+    supplied_type = (upload.content_type or "").lower()
+    if supplied_type and supplied_type not in (mime_type, "application/octet-stream"):
+        raise AppException(
+            status_code=422,
+            code="INVALID_ATTACHMENT_CONTENT_TYPE",
+            message="The selected file's content type does not match its file type.",
+        )
+    return content, extension, mime_type
 
 
 class CreateSupportReplyRequest(BaseModel):
@@ -1074,13 +1143,19 @@ async def list_support_tickets(
             t.id,
             t.ticket_number,
             t.category,
+            t.team_name,
+            t.team_number,
+            t.block_number,
+            t.lab_number,
             t.subject,
             t.description,
             t.status,
             h.title as hackathon_title,
             t.created_at,
             t.updated_at,
-            (SELECT COUNT(*) FROM participant_support_replies r WHERE r.ticket_id = t.id) as replies_count
+            (SELECT COUNT(*) FROM participant_support_replies r WHERE r.ticket_id = t.id) as replies_count,
+            t.attachment_url,
+            t.attachment_name
         FROM participant_support_tickets t
         LEFT JOIN hackathons h ON t.hackathon_id = h.id
         WHERE t.user_id = :uid
@@ -1093,75 +1168,264 @@ async def list_support_tickets(
             id=row[0],
             ticket_number=row[1],
             category=row[2],
-            subject=row[3],
-            description=row[4],
-            status=row[5],
-            hackathon_title=row[6],
-            created_at=row[7],
-            updated_at=row[8],
-            replies_count=row[9],
+            team_name=row[3],
+            team_number=row[4],
+            block_number=row[5],
+            lab_number=row[6],
+            subject=row[7],
+            description=row[8],
+            status=row[9],
+            hackathon_title=row[10],
+            created_at=row[11],
+            updated_at=row[12],
+            replies_count=row[13],
+            attachment_url=row[14],
+            attachment_name=row[15],
         )
         for row in rows
     ]
 
 
-@router.post("/support/tickets", response_model=SupportTicketItem)
+@router.post(
+    "/support/tickets",
+    response_model=SupportTicketItem,
+    status_code=status.HTTP_201_CREATED,
+)
 async def create_support_ticket(
-    payload: CreateSupportTicketRequest,
+    category: str = Form(..., min_length=2, max_length=50),
+    team_name: str = Form(..., min_length=1, max_length=200),
+    team_number: Optional[str] = Form(default=None, max_length=100),
+    block_number: Optional[str] = Form(default=None, max_length=50),
+    lab_number: Optional[str] = Form(default=None, max_length=100),
+    subject: str = Form(..., min_length=3, max_length=200),
+    description: str = Form(..., min_length=10, max_length=5000),
+    hackathon_id: Optional[uuid.UUID] = Form(default=None),
+    attachment: Optional[UploadFile] = File(default=None),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ) -> SupportTicketItem:
     """
     Creates a new support ticket and logs an initial automated acknowledgment reply.
     """
-    ticket_id = uuid.uuid4()
-    ticket_num = f"SCV-{secrets.randbelow(90000) + 10000}"
-
-    insert_stmt = text("""
-        INSERT INTO participant_support_tickets (
-            id, user_id, hackathon_id, ticket_number, category, subject, description, status, created_at, updated_at
-        ) VALUES (
-            :id, :uid, :hid, :tnum, :cat, :subj, :desc, 'open', NOW(), NOW()
-        ) RETURNING id, ticket_number, category, subject, description, status, created_at, updated_at
-    """)
-    res = (await db.execute(insert_stmt, {
-        "id": ticket_id,
-        "uid": user.id,
-        "hid": payload.hackathon_id,
-        "tnum": ticket_num,
-        "cat": payload.category,
-        "subj": payload.subject,
-        "desc": payload.description,
-    })).fetchone()
-
-    # Create acknowledgment reply
-    reply_stmt = text("""
-        INSERT INTO participant_support_replies (
-            id, ticket_id, user_id, author_name, is_staff, message, created_at
-        ) VALUES (
-            :id, :tid, :uid, 'Scorva Support Bot', TRUE, 
-            'Thank you for contacting Scorva Support. Your request has been assigned to a member of our operations team. We typically respond within a few hours.',
-            NOW()
+    category = category.strip()
+    team_name = team_name.strip()
+    subject = subject.strip()
+    description = description.strip()
+    if category not in SUPPORT_CATEGORIES:
+        raise AppException(
+            status_code=422,
+            code="INVALID_SUPPORT_CATEGORY",
+            message="Select a valid support category.",
         )
-    """)
-    await db.execute(reply_stmt, {
-        "id": uuid.uuid4(),
-        "tid": ticket_id,
-        "uid": user.id,
-    })
+    if not team_name or not subject or len(subject) < 3 or not description or len(description) < 10:
+        raise AppException(
+            status_code=422,
+            code="INVALID_SUPPORT_REQUEST",
+            message="Team name, a subject of at least 3 characters, and a description of at least 10 characters are required.",
+        )
 
-    await db.commit()
+    team_number_value: Optional[str] = None
+    block_number_value: Optional[str] = None
+    lab_number_value: Optional[str] = None
+    if category == "Venue / Seating Query":
+        team_number_value = (team_number or "").strip()
+        if not team_number_value:
+            raise AppException(
+                status_code=422,
+                code="TEAM_NUMBER_REQUIRED",
+                message="Team number is required for Venue / Seating Query requests.",
+            )
+    else:
+        block_number_value = (block_number or "").strip()
+        lab_number_value = (lab_number or "").strip()
+        if block_number_value not in SUPPORT_BLOCKS:
+            raise AppException(
+                status_code=422,
+                code="INVALID_BLOCK_NUMBER",
+                message="Select a block from Block 1 through Block 10.",
+            )
+        if not lab_number_value:
+            raise AppException(
+                status_code=422,
+                code="LAB_NUMBER_REQUIRED",
+                message="Lab number is required for this support category.",
+            )
+
+    if hackathon_id is not None:
+        membership_stmt = text("""
+            SELECT 1
+            FROM team_members tm
+            JOIN teams t ON t.id = tm.team_id
+            WHERE tm.user_id = :uid AND t.hackathon_id = :hid
+            LIMIT 1
+        """)
+        is_member = (await db.execute(
+            membership_stmt, {"uid": user.id, "hid": hackathon_id}
+        )).scalar_one_or_none()
+        if is_member is None:
+            raise AppException(
+                status_code=403,
+                code="HACKATHON_ACCESS_DENIED",
+                message="You can only associate a request with an event where you are a participant.",
+            )
+
+    attachment_content: Optional[bytes] = None
+    attachment_extension: Optional[str] = None
+    attachment_content_type: Optional[str] = None
+    attachment_name: Optional[str] = None
+    if attachment is not None:
+        if not attachment.filename:
+            raise AppException(
+                status_code=422,
+                code="ATTACHMENT_FILENAME_REQUIRED",
+                message="The selected attachment must have a file name.",
+            )
+        attachment_content, attachment_extension, attachment_content_type = (
+            await _read_support_attachment(attachment)
+        )
+        attachment_name = os.path.basename(attachment.filename.replace("\\", "/"))
+        if len(attachment_name) > 255:
+            raise AppException(
+                status_code=422,
+                code="ATTACHMENT_NAME_TOO_LONG",
+                message="Attachment file name must be 255 characters or fewer.",
+            )
+
+    ticket_id = uuid.uuid4()
+    ticket_num = f"SCV-{ticket_id.hex[:12].upper()}"
+    attachment_path: Optional[Path] = None
+    attachment_url: Optional[str] = None
+    attachment_file_created = False
+    if attachment_content is not None and attachment_extension is not None:
+        attachment_dir = Path(settings.SUPPORT_ATTACHMENT_DIR)
+        if not attachment_dir.is_absolute():
+            attachment_dir = Path(__file__).resolve().parents[4] / attachment_dir
+        attachment_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        attachment_path = attachment_dir / str(ticket_id)
+        attachment_url = f"/api/v1/participant/support/tickets/{ticket_id}/attachment"
+
+    committed = False
+    try:
+        if attachment_path is not None and attachment_content is not None:
+            file_descriptor = os.open(
+                attachment_path,
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                0o600,
+            )
+            attachment_file_created = True
+            with os.fdopen(file_descriptor, "wb") as attachment_file:
+                attachment_file.write(attachment_content)
+
+        insert_stmt = text("""
+            INSERT INTO participant_support_tickets (
+                id, user_id, hackathon_id, ticket_number, category, team_name,
+                team_number, block_number, lab_number, subject, description,
+                attachment_url, attachment_name, attachment_content_type,
+                status, created_at, updated_at
+            ) VALUES (
+                :id, :uid, :hid, :tnum, :cat, :team_name,
+                :team_number, :block_number, :lab_number, :subj, :desc,
+                :attachment_url, :attachment_name, :attachment_content_type,
+                'open', NOW(), NOW()
+            ) RETURNING id, ticket_number, category, team_name, team_number,
+                block_number, lab_number, subject, description, status,
+                created_at, updated_at, attachment_url, attachment_name
+        """)
+        res = (await db.execute(insert_stmt, {
+            "id": ticket_id,
+            "uid": user.id,
+            "hid": hackathon_id,
+            "tnum": ticket_num,
+            "cat": category,
+            "team_name": team_name,
+            "team_number": team_number_value,
+            "block_number": block_number_value,
+            "lab_number": lab_number_value,
+            "subj": subject,
+            "desc": description,
+            "attachment_url": attachment_url,
+            "attachment_name": attachment_name,
+            "attachment_content_type": attachment_content_type,
+        })).fetchone()
+
+        reply_stmt = text("""
+            INSERT INTO participant_support_replies (
+                id, ticket_id, user_id, author_name, is_staff, message, created_at
+            ) VALUES (
+                :id, :tid, :uid, 'Scorva Support Bot', TRUE,
+                'Thank you for contacting Scorva Support. Your request has been assigned to a member of our operations team. We typically respond within a few hours.',
+                NOW()
+            )
+        """)
+        await db.execute(reply_stmt, {
+            "id": uuid.uuid4(),
+            "tid": ticket_id,
+            "uid": user.id,
+        })
+
+        await db.commit()
+        committed = True
+    finally:
+        if not committed and attachment_file_created and attachment_path is not None:
+            attachment_path.unlink(missing_ok=True)
 
     return SupportTicketItem(
         id=res[0],
         ticket_number=res[1],
         category=res[2],
-        subject=res[3],
-        description=res[4],
-        status=res[5],
-        created_at=res[6],
-        updated_at=res[7],
+        team_name=res[3],
+        team_number=res[4],
+        block_number=res[5],
+        lab_number=res[6],
+        subject=res[7],
+        description=res[8],
+        status=res[9],
+        created_at=res[10],
+        updated_at=res[11],
         replies_count=1,
+        attachment_url=res[12],
+        attachment_name=res[13],
+    )
+
+
+@router.get("/support/tickets/{ticket_id}/attachment")
+async def download_support_ticket_attachment(
+    ticket_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+) -> FileResponse:
+    attachment_stmt = text("""
+        SELECT ticket_number, attachment_name, attachment_content_type
+        FROM participant_support_tickets
+        WHERE id = :tid AND user_id = :uid AND attachment_url IS NOT NULL
+    """)
+    row = (await db.execute(
+        attachment_stmt, {"tid": ticket_id, "uid": user.id}
+    )).fetchone()
+    if row is None:
+        raise AppException(
+            status_code=404,
+            code="ATTACHMENT_NOT_FOUND",
+            message="Attachment not found.",
+        )
+
+    attachment_dir = Path(settings.SUPPORT_ATTACHMENT_DIR)
+    if not attachment_dir.is_absolute():
+        attachment_dir = Path(__file__).resolve().parents[4] / attachment_dir
+    attachment_path = attachment_dir / str(ticket_id)
+    if not attachment_path.is_file():
+        raise AppException(
+            status_code=404,
+            code="ATTACHMENT_FILE_NOT_FOUND",
+            message="The support request attachment is no longer available.",
+        )
+
+    file_extension = Path(row[1] or "").suffix.lower()
+    return FileResponse(
+        path=attachment_path,
+        media_type=row[2] or "application/octet-stream",
+        filename=f"{row[0]}{file_extension}",
+        headers={"X-Content-Type-Options": "nosniff"},
     )
 
 
@@ -1177,8 +1441,10 @@ async def get_support_ticket_detail(
     """
     ticket_stmt = text("""
         SELECT 
-            t.id, t.ticket_number, t.category, t.subject, t.description, t.status,
-            h.title as hackathon_title, t.created_at, t.updated_at, t.user_id, t.hackathon_id
+            t.id, t.ticket_number, t.category, t.team_name, t.team_number,
+            t.block_number, t.lab_number, t.subject, t.description, t.status,
+            h.title as hackathon_title, t.created_at, t.updated_at, t.user_id,
+            t.hackathon_id, t.attachment_url, t.attachment_name
         FROM participant_support_tickets t
         LEFT JOIN hackathons h ON t.hackathon_id = h.id
         WHERE t.id = :tid
@@ -1187,8 +1453,8 @@ async def get_support_ticket_detail(
     if not t_row:
         raise AppException(status_code=404, code="TICKET_NOT_FOUND", message="Support ticket not found.")
 
-    ticket_owner_id = t_row[9]
-    hackathon_id = t_row[10]
+    ticket_owner_id = t_row[13]
+    hackathon_id = t_row[14]
 
     is_owner = (ticket_owner_id == user.id)
     is_staff = bool(user.platform_role)
@@ -1229,13 +1495,19 @@ async def get_support_ticket_detail(
         id=t_row[0],
         ticket_number=t_row[1],
         category=t_row[2],
-        subject=t_row[3],
-        description=t_row[4],
-        status=t_row[5],
-        hackathon_title=t_row[6],
-        created_at=t_row[7],
-        updated_at=t_row[8],
+        team_name=t_row[3],
+        team_number=t_row[4],
+        block_number=t_row[5],
+        lab_number=t_row[6],
+        subject=t_row[7],
+        description=t_row[8],
+        status=t_row[9],
+        hackathon_title=t_row[10],
+        created_at=t_row[11],
+        updated_at=t_row[12],
         replies_count=len(replies),
+        attachment_url=t_row[15],
+        attachment_name=t_row[16],
     )
 
     return SupportTicketDetailResponse(ticket=ticket, replies=replies)
@@ -1927,6 +2199,3 @@ async def verify_participant_github_repository(
         verified_at=now,
         verified_by_user=pat_row[1] or user.email,
     )
-
-
-

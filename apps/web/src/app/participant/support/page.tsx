@@ -19,8 +19,25 @@ import { api, ApiClientError } from '@/lib/api-client';
 import {
   SupportTicketItem,
   SupportTicketDetailResponse,
+  CreateSupportTicketRequest,
   ParticipantTeamItem,
 } from '@/types/api';
+
+const SUPPORT_CATEGORIES = [
+  'Project Submission',
+  'GitHub / Repository Issue',
+  'Team & Member Issue',
+  'AI Evaluation / Judging',
+  'Results & Leaderboard',
+  'Account & Login',
+  'Event Related',
+  'Venue / Seating Query',
+  'Technical Issue',
+  'Other',
+];
+const SUPPORT_BLOCKS = Array.from({ length: 10 }, (_, index) => `Block ${index + 1}`);
+const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+const ALLOWED_ATTACHMENT_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.pdf'];
 
 export default function ParticipantSupportPage() {
   const [activeTab, setActiveTab] = useState<'list' | 'new'>('list');
@@ -31,55 +48,87 @@ export default function ParticipantSupportPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [isDetailLoading, setIsDetailLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
   // Form states
-  const [category, setCategory] = useState('Technical / Repository Issue');
+  const [category, setCategory] = useState('Project Submission');
+  const [teamName, setTeamName] = useState('');
+  const [teamNumber, setTeamNumber] = useState('');
+  const [blockNumber, setBlockNumber] = useState('');
+  const [labNumber, setLabNumber] = useState('');
   const [subject, setSubject] = useState('');
   const [description, setDescription] = useState('');
   const [hackathonId, setHackathonId] = useState('');
+  const [attachment, setAttachment] = useState<File | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
   // Reply state
   const [replyMessage, setReplyMessage] = useState('');
   const [isSendingReply, setIsSendingReply] = useState(false);
+  const [replyError, setReplyError] = useState<string | null>(null);
 
   const fetchTickets = async () => {
     setIsLoading(true);
     setError(null);
-    try {
-      const [ticketList, teamList] = await Promise.all([
-        api.getParticipantSupportTickets(),
-        api.getParticipantTeams(),
-      ]);
-      setTickets(ticketList);
-      setTeams(teamList);
-      if (teamList.length > 0) {
-        setHackathonId(teamList[0].hackathon_id);
-      }
-    } catch (err: unknown) {
-      if (err instanceof ApiClientError) {
-        setError(err.message);
-      } else {
-        setError('Failed to load support tickets.');
-      }
-    } finally {
-      setIsLoading(false);
+    const [ticketResult, teamResult] = await Promise.allSettled([
+      api.getParticipantSupportTickets(),
+      api.getParticipantTeams(),
+    ]);
+
+    if (ticketResult.status === 'fulfilled') {
+      setTickets(ticketResult.value);
+    } else {
+      console.error('Failed to load participant support requests', ticketResult.reason);
+      setTickets([]);
+      setError(
+        ticketResult.reason instanceof ApiClientError
+          ? `Unable to load your requests: ${ticketResult.reason.message}`
+          : 'Unable to load your requests. Check your connection and try again.'
+      );
     }
+
+    if (teamResult.status === 'fulfilled') {
+      setTeams(teamResult.value);
+      if (teamResult.value.length > 0) {
+        setHackathonId((current) => current || teamResult.value[0].hackathon_id);
+      }
+    } else {
+      console.error('Failed to load participant teams for support requests', teamResult.reason);
+    }
+    setIsLoading(false);
   };
 
   useEffect(() => {
     fetchTickets();
   }, []);
 
+  useEffect(() => {
+    if (!successMessage) return;
+
+    const timeoutId = window.setTimeout(() => {
+      setSuccessMessage(null);
+    }, 5000);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [successMessage]);
+
   const fetchTicketDetail = async (ticketId: string) => {
     setSelectedTicketId(ticketId);
     setIsDetailLoading(true);
+    setTicketDetail(null);
+    setDetailError(null);
     try {
       const res = await api.getParticipantSupportTicketDetail(ticketId);
       setTicketDetail(res);
-    } catch (err) {
-      console.error('Failed to load ticket detail', err);
+    } catch (err: unknown) {
+      console.error('Failed to load participant support request details', err);
+      setDetailError(
+        err instanceof ApiClientError
+          ? `Unable to load this request: ${err.message}`
+          : 'Unable to load this request. Check your connection and try again.'
+      );
     } finally {
       setIsDetailLoading(false);
     }
@@ -87,32 +136,81 @@ export default function ParticipantSupportPage() {
 
   const handleCreateTicket = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!subject.trim() || subject.length < 3) {
+    if (subject.trim().length < 3) {
       setFormError('Subject must be at least 3 characters.');
       return;
     }
-    if (!description.trim() || description.length < 10) {
+    if (description.trim().length < 10) {
       setFormError('Please provide more description (at least 10 characters).');
       return;
+    }
+    if (!teamName.trim()) {
+      setFormError('Team name is required.');
+      return;
+    }
+    if (category === 'Venue / Seating Query' && !teamNumber.trim()) {
+      setFormError('Team number is required for Venue / Seating Query.');
+      return;
+    }
+    if (category !== 'Venue / Seating Query' && (!blockNumber || !labNumber.trim())) {
+      setFormError('Select a block and enter a lab number.');
+      return;
+    }
+    if (attachment) {
+      const extension = attachment.name.slice(attachment.name.lastIndexOf('.')).toLowerCase();
+      if (!ALLOWED_ATTACHMENT_EXTENSIONS.includes(extension)) {
+        setFormError('Attachment must be a PNG, JPG, JPEG, or PDF file.');
+        return;
+      }
+      if (attachment.size > MAX_ATTACHMENT_BYTES) {
+        setFormError('Attachment must be 5 MB or smaller.');
+        return;
+      }
+      const expectedMimeTypes: Record<string, string[]> = {
+        '.png': ['image/png'],
+        '.jpg': ['image/jpeg'],
+        '.jpeg': ['image/jpeg'],
+        '.pdf': ['application/pdf'],
+      };
+      if (attachment.type && !expectedMimeTypes[extension].includes(attachment.type)) {
+        setFormError('The selected file type does not match its file extension.');
+        return;
+      }
     }
 
     setIsSubmitting(true);
     setFormError(null);
     try {
-      const newTicket = await api.createParticipantSupportTicket({
+      const request: CreateSupportTicketRequest = {
         category,
+        team_name: teamName.trim(),
         subject: subject.trim(),
         description: description.trim(),
         hackathon_id: hackathonId || undefined,
-      });
+      };
+      if (category === 'Venue / Seating Query') {
+        request.team_number = teamNumber.trim();
+      } else {
+        request.block_number = blockNumber;
+        request.lab_number = labNumber.trim();
+      }
+      if (attachment) request.attachment = attachment;
 
-      // Clear form
+      const newTicket = await api.createParticipantSupportTicket(request);
+      setSuccessMessage(
+        `Your support request has been submitted successfully! Request ID: ${newTicket.ticket_number}`
+      );
+      setCategory('Project Submission');
+      setTeamName('');
+      setTeamNumber('');
+      setBlockNumber('');
+      setLabNumber('');
       setSubject('');
       setDescription('');
-      // Refresh tickets list and switch to detail
+      setAttachment(null);
       await fetchTickets();
-      fetchTicketDetail(newTicket.id);
       setActiveTab('list');
+      await fetchTicketDetail(newTicket.id);
     } catch (err: unknown) {
       if (err instanceof ApiClientError) {
         setFormError(err.message);
@@ -129,6 +227,7 @@ export default function ParticipantSupportPage() {
     if (!selectedTicketId || !replyMessage.trim()) return;
 
     setIsSendingReply(true);
+    setReplyError(null);
     try {
       const newReply = await api.replyParticipantSupportTicket(selectedTicketId, {
         message: replyMessage.trim(),
@@ -145,8 +244,13 @@ export default function ParticipantSupportPage() {
             : t
         )
       );
-    } catch (err) {
-      console.error('Failed to post reply', err);
+    } catch (err: unknown) {
+      console.error('Failed to post participant support reply', err);
+      setReplyError(
+        err instanceof ApiClientError
+          ? `Unable to send your reply: ${err.message}`
+          : 'Unable to send your reply. Check your connection and try again.'
+      );
     } finally {
       setIsSendingReply(false);
     }
@@ -155,11 +259,16 @@ export default function ParticipantSupportPage() {
   const getStatusBadge = (status: string) => {
     switch (status) {
       case 'resolved':
-      case 'closed':
         return (
           <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-[#F0FDF4] text-[#16A34A] border border-[#BBF7D0]">
             <CheckCircle2 className="w-3 h-3" />
             Resolved
+          </span>
+        );
+      case 'closed':
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-[#F8FAFC] text-[#64748B] border border-[#E2E8F0]">
+            Closed
           </span>
         );
       case 'in_progress':
@@ -235,6 +344,12 @@ export default function ParticipantSupportPage() {
         )}
       </div>
 
+      {successMessage && (
+        <div role="status" className="bg-[#F0FDF4] border border-[#BBF7D0] rounded-lg px-4 py-3 text-xs text-[#166534]">
+          {successMessage}
+        </div>
+      )}
+
       {/* Main Content Area */}
       {selectedTicketId ? (
         /* Ticket Detail & Conversation View */
@@ -250,12 +365,25 @@ export default function ParticipantSupportPage() {
             Back to All Requests
           </button>
 
-          {isDetailLoading || !ticketDetail ? (
+          {isDetailLoading ? (
             <div className="bg-white border border-[#E2E8F0] rounded-xl p-16 flex flex-col items-center justify-center text-center shadow-xs">
               <RefreshCw className="w-8 h-8 text-[#2563EB] animate-spin mb-3" />
               <p className="text-sm font-semibold text-[#111827]">Loading conversation thread...</p>
             </div>
-          ) : (
+          ) : detailError ? (
+            <div className="bg-white border border-[#E2E8F0] rounded-xl p-8 text-center max-w-lg mx-auto shadow-xs">
+              <AlertCircle className="w-10 h-10 text-[#DC2626] mx-auto mb-3" />
+              <h3 className="text-sm font-semibold text-[#111827]">Failed to load request</h3>
+              <p className="text-xs text-[#64748B] mt-1">{detailError}</p>
+              <button
+                onClick={() => selectedTicketId && fetchTicketDetail(selectedTicketId)}
+                className="inline-flex items-center gap-1.5 mt-4 px-4 py-2 bg-[#2563EB] text-white text-xs font-semibold rounded-lg hover:bg-[#1D4ED8]"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                Retry
+              </button>
+            </div>
+          ) : ticketDetail ? (
             <div className="space-y-6">
               {/* Ticket Overview Card */}
               <div className="bg-white border border-[#E2E8F0] rounded-xl p-6 shadow-xs space-y-4">
@@ -284,6 +412,29 @@ export default function ParticipantSupportPage() {
                   <p className="text-xs text-[#334155] leading-relaxed whitespace-pre-line">
                     {ticketDetail.ticket.description}
                   </p>
+                  <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-[#64748B]">
+                    <span>Team: {ticketDetail.ticket.team_name}</span>
+                    {ticketDetail.ticket.team_number && (
+                      <span>Team Number: {ticketDetail.ticket.team_number}</span>
+                    )}
+                    {ticketDetail.ticket.block_number && (
+                      <span>Block: {ticketDetail.ticket.block_number}</span>
+                    )}
+                    {ticketDetail.ticket.lab_number && (
+                      <span>Lab: {ticketDetail.ticket.lab_number}</span>
+                    )}
+                    {ticketDetail.ticket.attachment_url && (
+                      <a
+                        href={api.getParticipantSupportTicketAttachmentUrl(ticketDetail.ticket.id)}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1 text-[#2563EB] hover:underline"
+                      >
+                        <Paperclip className="w-3 h-3" />
+                        {ticketDetail.ticket.attachment_name || 'Download attachment'}
+                      </a>
+                    )}
+                  </div>
                 </div>
               </div>
 
@@ -344,6 +495,9 @@ export default function ParticipantSupportPage() {
 
                 {/* Reply Form */}
                 <form onSubmit={handleSendReply} className="pt-4 border-t border-[#E2E8F0] space-y-3">
+                  {replyError && (
+                    <p role="alert" className="text-xs text-[#DC2626]">{replyError}</p>
+                  )}
                   <label htmlFor="reply-input" className="block text-xs font-semibold text-[#111827]">
                     Add a follow-up reply
                   </label>
@@ -368,7 +522,7 @@ export default function ParticipantSupportPage() {
                 </form>
               </div>
             </div>
-          )}
+          ) : null}
         </div>
       ) : activeTab === 'new' ? (
         /* Create New Ticket Form */
@@ -385,7 +539,7 @@ export default function ParticipantSupportPage() {
             </div>
           )}
 
-          <form onSubmit={handleCreateTicket} className="space-y-4">
+          <form onSubmit={handleCreateTicket} className="w-full min-w-0 space-y-4">
             <div>
               <label htmlFor="req-category" className="block text-xs font-semibold text-[#111827] mb-1">
                 Category
@@ -393,14 +547,19 @@ export default function ParticipantSupportPage() {
               <select
                 id="req-category"
                 value={category}
-                onChange={(e) => setCategory(e.target.value)}
-                className="w-full px-3 py-2 text-xs rounded-lg bg-white border border-[#E2E8F0] text-[#111827] focus:outline-none focus:ring-2 focus:ring-[#2563EB]"
+                onChange={(e) => {
+                  setCategory(e.target.value);
+                  setTeamNumber('');
+                  setBlockNumber('');
+                  setLabNumber('');
+                  setFormError(null);
+                }}
+                required
+                className="box-border h-9 w-full max-w-full min-w-0 px-3 text-xs rounded-lg bg-white border border-[#E2E8F0] text-[#111827] focus:outline-none focus:ring-2 focus:ring-[#2563EB]"
               >
-                <option value="Technical / Repository Issue">Technical / Repository Issue</option>
-                <option value="Judging & Evaluation Inquiry">Judging & Evaluation Inquiry</option>
-                <option value="Team & Registration">Team & Registration</option>
-                <option value="Platform Bug">Platform Bug</option>
-                <option value="General Inquiry">General Inquiry</option>
+                {SUPPORT_CATEGORIES.map((item) => (
+                  <option key={item} value={item}>{item}</option>
+                ))}
               </select>
             </div>
 
@@ -413,7 +572,7 @@ export default function ParticipantSupportPage() {
                   id="req-hackathon"
                   value={hackathonId}
                   onChange={(e) => setHackathonId(e.target.value)}
-                  className="w-full px-3 py-2 text-xs rounded-lg bg-white border border-[#E2E8F0] text-[#111827] focus:outline-none focus:ring-2 focus:ring-[#2563EB]"
+                  className="box-border h-9 w-full max-w-full min-w-0 px-3 text-xs rounded-lg bg-white border border-[#E2E8F0] text-[#111827] focus:outline-none focus:ring-2 focus:ring-[#2563EB]"
                 >
                   {teams.map((t) => (
                     <option key={t.hackathon_id} value={t.hackathon_id}>
@@ -425,6 +584,75 @@ export default function ParticipantSupportPage() {
             )}
 
             <div>
+              <label htmlFor="req-team-name" className="block text-xs font-semibold text-[#111827] mb-1">
+                Team Name
+              </label>
+              <input
+                id="req-team-name"
+                type="text"
+                value={teamName}
+                onChange={(e) => setTeamName(e.target.value)}
+                placeholder="Enter your team name"
+                maxLength={200}
+                required
+                className="box-border h-9 w-full max-w-full min-w-0 px-3 text-xs rounded-lg border border-[#E2E8F0] focus:outline-none focus:ring-2 focus:ring-[#2563EB]"
+              />
+            </div>
+
+            {category === 'Venue / Seating Query' ? (
+              <div>
+                <label htmlFor="req-team-number" className="block text-xs font-semibold text-[#111827] mb-1">
+                  Team Number
+                </label>
+                <input
+                  id="req-team-number"
+                  type="text"
+                  value={teamNumber}
+                  onChange={(e) => setTeamNumber(e.target.value)}
+                  placeholder="Enter your team number"
+                  maxLength={100}
+                  required
+                  className="box-border h-9 w-full max-w-full min-w-0 px-3 text-xs rounded-lg border border-[#E2E8F0] focus:outline-none focus:ring-2 focus:ring-[#2563EB]"
+                />
+              </div>
+            ) : (
+              <>
+                <div>
+                  <label htmlFor="req-block-number" className="block text-xs font-semibold text-[#111827] mb-1">
+                    Block Number
+                  </label>
+                  <select
+                    id="req-block-number"
+                    value={blockNumber}
+                    onChange={(e) => setBlockNumber(e.target.value)}
+                    required
+                    className="box-border h-9 w-full max-w-full min-w-0 px-3 text-xs rounded-lg bg-white border border-[#E2E8F0] text-[#111827] focus:outline-none focus:ring-2 focus:ring-[#2563EB]"
+                  >
+                    <option value="">Select a block</option>
+                    {SUPPORT_BLOCKS.map((block) => (
+                      <option key={block} value={block}>{block}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="req-lab-number" className="block text-xs font-semibold text-[#111827] mb-1">
+                    Lab Number
+                  </label>
+                  <input
+                    id="req-lab-number"
+                    type="text"
+                    value={labNumber}
+                    onChange={(e) => setLabNumber(e.target.value)}
+                    placeholder="Enter your lab number"
+                    maxLength={100}
+                    required
+                    className="box-border h-9 w-full max-w-full min-w-0 px-3 text-xs rounded-lg border border-[#E2E8F0] focus:outline-none focus:ring-2 focus:ring-[#2563EB]"
+                  />
+                </div>
+              </>
+            )}
+
+            <div>
               <label htmlFor="req-subject" className="block text-xs font-semibold text-[#111827] mb-1">
                 Subject
               </label>
@@ -433,8 +661,11 @@ export default function ParticipantSupportPage() {
                 type="text"
                 value={subject}
                 onChange={(e) => setSubject(e.target.value)}
-                placeholder="e.g. Cannot trigger automated code evaluation for commit 7c8f"
-                className="w-full px-3 py-2 text-xs rounded-lg border border-[#E2E8F0] focus:outline-none focus:ring-2 focus:ring-[#2563EB]"
+                placeholder="Enter a short subject for your issue"
+                minLength={3}
+                maxLength={200}
+                required
+                className="box-border h-9 w-full max-w-full min-w-0 px-3 text-xs rounded-lg border border-[#E2E8F0] focus:outline-none focus:ring-2 focus:ring-[#2563EB]"
               />
             </div>
 
@@ -447,9 +678,42 @@ export default function ParticipantSupportPage() {
                 rows={5}
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
-                placeholder="Include relevant details, error messages, repository branch, or step-by-step notes..."
-                className="w-full px-3 py-2 text-xs rounded-lg border border-[#E2E8F0] focus:outline-none focus:ring-2 focus:ring-[#2563EB]"
+                placeholder="Explain your issue in detail. Include any relevant information..."
+                minLength={10}
+                maxLength={5000}
+                required
+                className="box-border w-full max-w-full min-w-0 px-3 py-2 text-xs rounded-lg border border-[#E2E8F0] focus:outline-none focus:ring-2 focus:ring-[#2563EB]"
               />
+            </div>
+
+            <div className="w-full min-w-0">
+              <label htmlFor="req-attachment" className="block text-xs font-semibold text-[#111827] mb-1">
+                Attachment (Optional)
+              </label>
+              <input
+                id="req-attachment"
+                key={attachment?.name || 'no-attachment'}
+                type="file"
+                accept=".png,.jpg,.jpeg,.pdf,image/png,image/jpeg,application/pdf"
+                onChange={(e) => setAttachment(e.target.files?.[0] ?? null)}
+                className="box-border block w-full max-w-full min-w-0 text-xs text-[#64748B] file:mr-3 file:px-3 file:py-2 file:rounded-lg file:border-0 file:bg-[#EFF6FF] file:text-[#2563EB] file:text-xs file:font-semibold"
+              />
+              <p className="mt-1 text-[11px] text-[#94A3B8]">PNG, JPG, JPEG, or PDF. Maximum size: 5 MB.</p>
+              {attachment && (
+                <div className="mt-2 flex items-center justify-between gap-2 text-xs text-[#475569]">
+                  <span className="inline-flex items-center gap-1.5 truncate">
+                    <Paperclip className="w-3.5 h-3.5 shrink-0" />
+                    <span className="truncate">{attachment.name}</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setAttachment(null)}
+                    className="shrink-0 font-semibold text-[#2563EB] hover:underline"
+                  >
+                    Remove
+                  </button>
+                </div>
+              )}
             </div>
 
             <div className="pt-3 flex items-center justify-end gap-3">
@@ -484,20 +748,30 @@ export default function ParticipantSupportPage() {
               <AlertCircle className="w-10 h-10 text-[#DC2626] mx-auto mb-3" />
               <h3 className="text-sm font-semibold text-[#111827]">Failed to load tickets</h3>
               <p className="text-xs text-[#64748B] mt-1">{error}</p>
+              <button
+                onClick={fetchTickets}
+                className="inline-flex items-center gap-1.5 mt-4 px-4 py-2 bg-[#2563EB] text-white text-xs font-semibold rounded-lg hover:bg-[#1D4ED8]"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                Retry
+              </button>
             </div>
           ) : tickets.length === 0 ? (
             <div className="bg-white border border-[#E2E8F0] rounded-xl p-12 text-center max-w-xl mx-auto shadow-xs space-y-3">
               <LifeBuoy className="w-10 h-10 text-[#94A3B8] mx-auto mb-2" />
-              <h3 className="text-base font-bold text-[#111827]">No support requests yet</h3>
+              <h3 className="text-base font-bold text-[#111827]">No Requests Yet</h3>
               <p className="text-xs text-[#64748B]">
-                Have a question or running into an issue during the hackathon? Create a ticket and the organizing team will assist you.
+                You haven't submitted any support requests yet. If you need assistance, create a new request.
               </p>
               <button
-                onClick={() => setActiveTab('new')}
+                onClick={() => {
+                  setActiveTab('new');
+                  setSuccessMessage(null);
+                }}
                 className="inline-flex items-center gap-1.5 px-4 py-2 mt-2 bg-[#2563EB] text-white text-xs font-semibold rounded-lg hover:bg-[#1D4ED8] transition-colors"
               >
                 <PlusCircle className="w-3.5 h-3.5" />
-                Create First Ticket
+                Create New Request
               </button>
             </div>
           ) : (
@@ -519,6 +793,7 @@ export default function ParticipantSupportPage() {
                     <p className="text-xs text-[#64748B] line-clamp-1">{ticket.description}</p>
                     <div className="flex items-center gap-3 text-[11px] text-[#94A3B8] pt-0.5">
                       <span>Category: {ticket.category}</span>
+                      <span>• Team: {ticket.team_name}</span>
                       {ticket.hackathon_title && <span>• {ticket.hackathon_title}</span>}
                       <span>• Created {new Date(ticket.created_at).toLocaleDateString()}</span>
                     </div>

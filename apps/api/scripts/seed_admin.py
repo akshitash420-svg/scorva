@@ -24,6 +24,14 @@ from apps.api.core.security import (
     get_totp_provisioning_uri,
     hash_password,
 )
+# Register all models before querying users so cross-module relationships resolve.
+import apps.api.modules.audit.models  # noqa: F401
+import apps.api.modules.auth.models  # noqa: F401
+import apps.api.modules.configuration.models  # noqa: F401
+import apps.api.modules.evaluations.models  # noqa: F401
+import apps.api.modules.hackathons.models  # noqa: F401
+import apps.api.modules.organizations.models  # noqa: F401
+import apps.api.modules.rbac.models  # noqa: F401
 from apps.api.modules.users.models import PlatformRole, User
 
 
@@ -133,6 +141,14 @@ async def seed_development_presets() -> None:
                 # Distinct secret for security auditor
                 "encrypted_mfa_secret": encrypt_totp_secret("HXDMVJECJJWSRB3HWIZR4IFUGFTMXBOZ", settings.ENCRYPTION_MASTER_KEY),
             },
+            {
+                "email": "participant@scorva.io",
+                "full_name": "Demo Participant",
+                "password": "Password123!",
+                "platform_role": None,
+                "mfa_enabled": False,
+                "encrypted_mfa_secret": None,
+            },
         ]
 
         for acc in dev_accounts:
@@ -171,6 +187,7 @@ async def seed_development_presets() -> None:
     print("  1) admin@scorva.io / Password123!   (MFA setup flow)")
     print("  2) owner@scorva.io / Password123!   (MFA enrolled: JBSWY3DPEHPK3PXP)")
     print("  3) security@scorva.io / Password123! (MFA enrolled: HXDMVJECJJWSRB3HWIZR4IFUGFTMXBOZ)")
+    print("  4) participant@scorva.io / Password123! (Participant workspace)")
     print("=" * 60 + "\n")
 
 

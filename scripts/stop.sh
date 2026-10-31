@@ -7,7 +7,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/common.sh"
 
-STOP_CONTAINERS=1
+STOP_DEPENDENCIES=1
 TEAR_DOWN_CONTAINERS=0
 
 usage() {
@@ -18,13 +18,13 @@ ${BOLD}Usage:${NC}
   ./stop.sh [options]
 
 ${BOLD}Options:${NC}
-  -k, --keep-containers   Keep backing Docker containers (Postgres, Redis) running
-  -c, --down              Tear down and remove Docker containers (docker compose down)
+  -k, --keep-containers   Keep PostgreSQL/Redis running
+  -c, --down              Tear down Docker containers (requires Docker)
   -h, --help              Show this help message
 
 ${BOLD}Default Behavior:${NC}
   Stops the Next.js frontend (port 3000), FastAPI backend (port 8000),
-  and pauses the PostgreSQL and Redis containers.
+  and stops the Homebrew PostgreSQL and Redis services.
 
 EOF
     exit 0
@@ -34,7 +34,7 @@ EOF
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -k|--keep-containers)
-            STOP_CONTAINERS=0
+            STOP_DEPENDENCIES=0
             shift
             ;;
         -c|--down)
@@ -140,14 +140,25 @@ cleanup_port "$API_PORT" "FastAPI Backend"
 # 3. Handle Docker Containers
 if [ "$TEAR_DOWN_CONTAINERS" -eq 1 ]; then
     log_step "Tearing down Docker containers..."
+    if ! command -v docker >/dev/null 2>&1; then
+        log_error "Docker is not installed; cannot tear down Compose containers."
+        exit 1
+    fi
     docker compose down
     log_success "Docker containers removed."
-elif [ "$STOP_CONTAINERS" -eq 1 ]; then
-    log_step "Stopping backing Docker containers (PostgreSQL, Redis)..."
-    docker compose stop postgres redis 2>/dev/null || true
-    log_success "Docker containers stopped."
+elif [ "$STOP_DEPENDENCIES" -eq 1 ]; then
+    if command -v brew >/dev/null 2>&1; then
+        if brew list --versions "$POSTGRES_SERVICE" >/dev/null 2>&1; then
+            log_step "Stopping Homebrew PostgreSQL service..."
+            brew services stop "$POSTGRES_SERVICE"
+        fi
+        if brew list --versions "$REDIS_SERVICE" >/dev/null 2>&1; then
+            log_step "Stopping Homebrew Redis service..."
+            brew services stop "$REDIS_SERVICE"
+        fi
+    fi
 else
-    log_info "Preserving running Docker containers (--keep-containers)."
+    log_info "Preserving PostgreSQL and Redis services (--keep-containers)."
 fi
 
 # Clean up stale PID files

@@ -10,7 +10,7 @@ source "${SCRIPT_DIR}/common.sh"
 MODE="hybrid"
 START_API=1
 START_WEB=1
-START_DOCKER_SERVICES=1
+START_LOCAL_SERVICES=1
 FOLLOW_LOGS=0
 
 usage() {
@@ -25,11 +25,11 @@ ${BOLD}Options:${NC}
   -d, --docker        Start full containerized stack via Docker Compose
   --api-only          Start backing services (Postgres, Redis) and FastAPI backend only
   --web-only          Start Next.js frontend only
-  --no-db             Skip starting Docker Postgres/Redis containers
+  --no-db             Skip starting local PostgreSQL/Redis services
   -h, --help          Show this help message
 
 ${BOLD}Default Behavior:${NC}
-  Starts PostgreSQL & Redis via Docker, then launches FastAPI (port 8000)
+  Starts PostgreSQL & Redis via Homebrew, then launches FastAPI (port 8000)
   and Next.js (port 3000) in local development mode with live reload.
   Logs are piped to .run/logs/ and PIDs tracked in .run/pids/.
 
@@ -54,11 +54,11 @@ while [[ $# -gt 0 ]]; do
             ;;
         --web-only)
             START_API=0
-            START_DOCKER_SERVICES=0
+            START_LOCAL_SERVICES=0
             shift
             ;;
         --no-db)
-            START_DOCKER_SERVICES=0
+            START_LOCAL_SERVICES=0
             shift
             ;;
         -h|--help)
@@ -81,6 +81,9 @@ echo -e "${BOLD}${CYAN}======================================================${N
 if [ "$MODE" = "docker" ]; then
     log_step "Starting complete stack via Docker Compose..."
     ensure_env_file
+    if ! check_prerequisites "$MODE" 0 0; then
+        exit 1
+    fi
     docker compose up -d
     log_success "Docker Compose services launched."
     docker compose ps
@@ -93,44 +96,32 @@ fi
 # Pre-flight environment validation
 ensure_run_dirs
 ensure_env_file
-if ! check_prerequisites; then
+if ! check_prerequisites "$MODE" "$START_API" "$START_WEB"; then
     log_error "Pre-flight checks failed. Please fix missing dependencies above."
     exit 1
 fi
 
+if [ -f "${PROJECT_ROOT}/.env" ]; then
+    set -a
+    source "${PROJECT_ROOT}/.env"
+    set +a
+fi
+
 # 1. Backing Services (PostgreSQL & Redis)
-if [ "$START_DOCKER_SERVICES" -eq 1 ]; then
-    log_step "Starting infrastructure services (PostgreSQL & Redis via Docker)..."
-    
-    if ! docker info >/dev/null 2>&1; then
-        log_error "Docker daemon is not responding. Please start Docker."
+if [ "$START_LOCAL_SERVICES" -eq 1 ] && [ "$START_API" -eq 1 ]; then
+    log_step "Starting local PostgreSQL and Redis services..."
+    start_local_dependencies
+
+    if ! command -v psql >/dev/null 2>&1 || ! PGPASSWORD="${POSTGRES_PASSWORD:-scorva_dev_password}" psql -h 127.0.0.1 -U "${POSTGRES_USER:-scorva}" -d "${POSTGRES_DB:-scorva}" -c "SELECT 1" >/dev/null 2>&1; then
+        log_error "Cannot connect to the configured PostgreSQL database."
+        log_info "Run ./scripts/setup.sh to create the local database and credentials."
         exit 1
     fi
-
-    docker compose up -d postgres redis
-
-    # Wait for PostgreSQL to report healthy
-    echo -n "  Waiting for PostgreSQL to be ready"
-    local_timeout=20
-    while [ $local_timeout -gt 0 ]; do
-        if is_port_listening "$DB_PORT"; then
-            # Verify postgres is accepting connections
-            if docker compose exec -T postgres pg_isready -U scorva -d scorva >/dev/null 2>&1; then
-                break
-            fi
-        fi
-        echo -n "."
-        sleep 1
-        local_timeout=$((local_timeout - 1))
-    done
-    echo ""
-
-    if [ $local_timeout -le 0 ]; then
-        log_error "Timed out waiting for PostgreSQL container on port ${DB_PORT}."
+    if ! command -v redis-cli >/dev/null 2>&1 || ! redis-cli -h 127.0.0.1 -p "${REDIS_PORT:-6379}" ping >/dev/null 2>&1; then
+        log_error "Cannot connect to Redis on port ${REDIS_PORT}."
         exit 1
     fi
-    log_success "PostgreSQL is healthy on port ${DB_PORT}"
-    log_success "Redis is active on port ${REDIS_PORT}"
+    log_success "PostgreSQL and Redis are ready."
 
     # Apply database schema migrations
     log_step "Running Alembic database migrations..."
@@ -148,7 +139,7 @@ if [ "$START_DOCKER_SERVICES" -eq 1 ]; then
     # Ensure development administrator accounts exist if in development
     if [ -x "${PROJECT_ROOT}/.venv/bin/python" ] && [ "${SCORVA_ENV:-development}" != "production" ]; then
         log_step "Ensuring development administrative seed accounts exist..."
-        PYTHONPATH="${PROJECT_ROOT}" "${PROJECT_ROOT}/.venv/bin/python" "${PROJECT_ROOT}/apps/api/scripts/seed_admin.py" --dev-defaults >/dev/null 2>&1 || true
+        PYTHONPATH="${PROJECT_ROOT}" "${PROJECT_ROOT}/.venv/bin/python" "${PROJECT_ROOT}/apps/api/scripts/seed_admin.py" --dev-defaults
         log_success "Development administrative seed accounts verified."
     fi
 fi
@@ -165,12 +156,7 @@ if [ "$START_API" -eq 1 ]; then
         log_warn "Port ${API_PORT} is already in use by PID ${CONFLICT_PID:-unknown}. Reusing existing listener."
     else
         log_info "Launching FastAPI backend (development reload mode)..."
-        # Export environment variables from .env
-        set -a
-        source "${PROJECT_ROOT}/.env"
-        set +a
-
-        setsid "${PROJECT_ROOT}/.venv/bin/python" -m uvicorn apps.api.main:app \
+        nohup "${PROJECT_ROOT}/.venv/bin/python" -m uvicorn apps.api.main:app \
             --reload \
             --host 0.0.0.0 \
             --port "${API_PORT}" \
@@ -227,7 +213,7 @@ if [ "$START_WEB" -eq 1 ]; then
         log_warn "Port ${WEB_PORT} is already in use by PID ${CONFLICT_PID:-unknown}. Reusing existing listener."
     else
         log_info "Launching Next.js frontend (development mode)..."
-        setsid npm --prefix "${PROJECT_ROOT}/apps/web" run dev \
+        nohup npm --prefix "${PROJECT_ROOT}/apps/web" run dev \
             < /dev/null > "${WEB_LOG_FILE}" 2>&1 &
         WEB_PID=$!
         echo "$WEB_PID" > "${WEB_PID_FILE}"

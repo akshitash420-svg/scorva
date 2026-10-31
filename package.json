@@ -5,6 +5,7 @@
   "description": "Scorva AI-Assisted Hackathon Evaluation SaaS Platform",
   "scripts": {
     "start": "./start.sh",
+    "setup": "./scripts/setup.sh",
     "stop": "./stop.sh",
     "status": "./status.sh",
     "logs": "./scripts/logs.sh",
