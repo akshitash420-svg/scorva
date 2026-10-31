@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Optional
 import uuid
 from fastapi import APIRouter, Depends, Query, Request, status
@@ -50,6 +51,8 @@ async def get_hackathons(
     status: Optional[HackathonStatus] = Query(None, description="Filter by hackathon lifecycle status"),
     sort_by: str = Query("created_at", description="Sort field ('created_at', 'start_date', 'title')"),
     sort_order: str = Query("desc", description="Sort direction ('asc', 'desc')"),
+    start_date_after: Optional[datetime] = Query(None),
+    start_date_before: Optional[datetime] = Query(None),
     tenant: TenantContext = Depends(require_org_member),
     db: AsyncSession = Depends(get_db_session),
 ):
@@ -63,6 +66,8 @@ async def get_hackathons(
         hackathon_status=status,
         sort_by=sort_by,
         sort_order=sort_order,
+        start_date_after=start_date_after,
+        start_date_before=start_date_before,
     )
     return PaginatedHackathonsResponse(
         items=items,
@@ -262,4 +267,3 @@ async def post_unpublish_results(
 # Mount Subresources Router (Teams, Submissions, Judges, Rubrics, Overview)
 from apps.api.modules.hackathons.subresources_router import router as subresources_router
 router.include_router(subresources_router)
-

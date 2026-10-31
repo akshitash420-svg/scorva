@@ -266,6 +266,121 @@ export interface OrganizationProfileResponse {
   updated_at: string;
 }
 
+export interface OrganizationDashboardHackathon {
+  id: string;
+  title: string;
+  status: string;
+  start_date: string;
+  end_date: string;
+  organizer_name?: string | null;
+  team_count: number;
+  submission_count: number;
+  evaluation_total: number;
+  evaluation_completed: number;
+  evaluation_pending: number;
+  evaluation_in_progress: number;
+  results_finalized: boolean;
+}
+
+export interface OrganizationDashboardResponse {
+  id: string;
+  name: string;
+  slug: string;
+  status: OrganizationStatus;
+  owner_id: string;
+  owner_name?: string | null;
+  owner_email?: string | null;
+  current_user_role: OrgRole;
+  created_at: string;
+  settings: Record<string, unknown>;
+  total_hackathons: number;
+  active_hackathons: number;
+  upcoming_hackathons: number;
+  completed_hackathons: number;
+  total_teams: number;
+  teams_with_submissions: number;
+  total_submissions: number;
+  pending_submissions: number;
+  evaluations_completed: number;
+  evaluations_pending: number;
+  evaluations_in_progress: number;
+  finalized_results: number;
+  hackathons: OrganizationDashboardHackathon[];
+}
+
+export interface OrganizationTeamListItem {
+  id: string;
+  name: string;
+  team_number: string;
+  hackathon_id: string;
+  hackathon_name: string;
+  leader_name?: string | null;
+  leader_email?: string | null;
+  member_count: number;
+  registered_at: string;
+  submission_id?: string | null;
+  submission_title?: string | null;
+  submission_description?: string | null;
+  repository_url?: string | null;
+  submission_status: string;
+  evaluation_status: string;
+}
+
+export interface OrganizationTeamPage {
+  items: OrganizationTeamListItem[];
+  total: number;
+  page: number;
+  limit: number;
+  total_pages: number;
+}
+
+export interface OrganizationTeamDetailResponse {
+  id: string;
+  name: string;
+  team_number: string;
+  hackathon_id: string;
+  hackathon_name: string;
+  created_at: string;
+  members: Array<{
+    id: string;
+    name: string;
+    email: string;
+    role: string;
+    joined_at: string;
+  }>;
+  submission_id?: string | null;
+  submission_title?: string | null;
+  submission_description?: string | null;
+  repository_url?: string | null;
+  submission_status: string;
+  evaluation_status: string;
+}
+
+export interface OrganizationActivityItem {
+  id: string;
+  actor: string;
+  actor_role: string;
+  action: string;
+  related_entity: string;
+  related_entity_id: string;
+  hackathon_name?: string | null;
+  timestamp: string;
+  description?: string | null;
+}
+
+export interface OrganizationActivityResponse {
+  items: OrganizationActivityItem[];
+  total: number;
+  page: number;
+  limit: number;
+  total_pages: number;
+}
+
+export interface UpdateOrganizationSettingsRequest {
+  timezone?: string;
+  max_hackathons?: number;
+}
+
 export interface OrganizationMemberResponse {
   id: string;
   organization_id: string;
@@ -1333,8 +1448,6 @@ export interface VerifyParticipantGitHubResponse {
   verified_at: string;
   verified_by_user?: string | null;
 }
-
-
 
 
 

@@ -15,6 +15,11 @@ import {
   OrgRole,
   OrganizationDetailResponse,
   OrganizationProfileResponse,
+  OrganizationDashboardResponse,
+  OrganizationTeamPage,
+  OrganizationTeamDetailResponse,
+  OrganizationActivityResponse,
+  UpdateOrganizationSettingsRequest,
   OrganizationMemberResponse,
   PaginatedOrganizationsResponse,
   CreateOrganizationRequest,
@@ -483,6 +488,16 @@ export const api = {
     return fetchApi<OrganizationProfileResponse>(`/api/v1/organizations/${orgId}`, options);
   },
 
+  getTenantOrganizationDashboard: async (
+    orgId: string,
+    options?: RequestInit
+  ): Promise<OrganizationDashboardResponse> => {
+    return fetchApi<OrganizationDashboardResponse>(
+      `/api/v1/organizations/${orgId}/dashboard`,
+      options
+    );
+  },
+
   updateTenantOrganizationProfile: async (
     orgId: string,
     data: TenantUpdateOrganizationRequest
@@ -491,6 +506,83 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(data),
     });
+  },
+
+  updateTenantOrganizationSettings: async (
+    orgId: string,
+    data: UpdateOrganizationSettingsRequest
+  ): Promise<OrganizationProfileResponse> => {
+    return fetchApi<OrganizationProfileResponse>(
+      `/api/v1/organizations/${orgId}/settings`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      }
+    );
+  },
+
+  getTenantOrganizationTeams: async (
+    orgId: string,
+    params: {
+      page?: number;
+      limit?: number;
+      search?: string;
+      hackathon_id?: string;
+      submission_status?: string;
+      evaluation_status?: string;
+      sort_by?: string;
+      sort_order?: 'asc' | 'desc';
+    },
+    options?: RequestInit
+  ): Promise<OrganizationTeamPage> => {
+    const searchParams = new URLSearchParams();
+    Object.entries(params).forEach(([key, value]) => {
+      if (value !== undefined && value !== '') {
+        searchParams.set(key, String(value));
+      }
+    });
+    const qs = searchParams.toString();
+    return fetchApi<OrganizationTeamPage>(
+      `/api/v1/organizations/${orgId}/teams${qs ? `?${qs}` : ''}`,
+      options
+    );
+  },
+
+  getTenantOrganizationTeam: async (
+    orgId: string,
+    teamId: string,
+    options?: RequestInit
+  ): Promise<OrganizationTeamDetailResponse> => {
+    return fetchApi<OrganizationTeamDetailResponse>(
+      `/api/v1/organizations/${orgId}/teams/${teamId}`,
+      options
+    );
+  },
+
+  getTenantOrganizationActivity: async (
+    orgId: string,
+    params: {
+      page?: number;
+      limit?: number;
+      activity_type?: string;
+      actor?: string;
+      start_date?: string;
+      end_date?: string;
+      hackathon_id?: string;
+    },
+    options?: RequestInit
+  ): Promise<OrganizationActivityResponse> => {
+    const searchParams = new URLSearchParams();
+    Object.entries(params).forEach(([key, value]) => {
+      if (value !== undefined && value !== '') {
+        searchParams.set(key, String(value));
+      }
+    });
+    const qs = searchParams.toString();
+    return fetchApi<OrganizationActivityResponse>(
+      `/api/v1/organizations/${orgId}/activity${qs ? `?${qs}` : ''}`,
+      options
+    );
   },
 
   getTenantOrganizationMembers: async (
@@ -549,6 +641,8 @@ export const api = {
       status?: HackathonStatus;
       sort_by?: string;
       sort_order?: 'asc' | 'desc';
+      start_date_after?: string;
+      start_date_before?: string;
     },
     options?: RequestInit
   ): Promise<PaginatedHackathonsResponse> => {
@@ -559,6 +653,8 @@ export const api = {
     if (params?.status) searchParams.set('status', params.status);
     if (params?.sort_by) searchParams.set('sort_by', params.sort_by);
     if (params?.sort_order) searchParams.set('sort_order', params.sort_order);
+    if (params?.start_date_after) searchParams.set('start_date_after', params.start_date_after);
+    if (params?.start_date_before) searchParams.set('start_date_before', params.start_date_before);
 
     const qs = searchParams.toString();
     return fetchApi<PaginatedHackathonsResponse>(`/api/v1/organizations/${orgId}/hackathons${qs ? `?${qs}` : ''}`, options);

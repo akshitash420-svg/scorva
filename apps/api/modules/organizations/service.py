@@ -20,6 +20,7 @@ from apps.api.modules.organizations.models import (
     OrganizationMembership,
     OrganizationStatus,
 )
+from apps.api.modules.organizations.dashboard_service import validate_organization_settings
 from apps.api.modules.organizations.schemas import (
     AdminAddMemberRequest,
     AdminUpdateOrganizationRequest,
@@ -968,6 +969,12 @@ async def update_tenant_organization_profile(
         org.name = data.name
 
     if data.settings is not None:
+        await validate_organization_settings(
+            db=db,
+            org_id=org_id,
+            role=current_user_role,
+            values=data.settings,
+        )
         merged_settings = {**(org.settings or {}), **data.settings} if isinstance(org.settings, dict) else data.settings
         assert_settings_does_not_contain_credentials(merged_settings)
         diff["settings"] = {"old": org.settings, "new": merged_settings}

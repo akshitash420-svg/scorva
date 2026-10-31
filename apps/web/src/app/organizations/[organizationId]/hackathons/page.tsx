@@ -12,16 +12,14 @@ import {
   X,
   ChevronLeft,
   ChevronRight,
-  Calendar,
-  Clock,
   ArrowRight,
-  ExternalLink,
 } from 'lucide-react';
 import { StatusBadge } from '@/components/admin/StatusBadge';
 import { api, ApiClientError } from '@/lib/api-client';
 import {
   HackathonDetailResponse,
   HackathonStatus,
+  OrganizationDashboardResponse,
 } from '@/types/api';
 
 export default function TenantHackathonsPage({
@@ -34,6 +32,7 @@ export default function TenantHackathonsPage({
 
   const [prevOrgId, setPrevOrgId] = useState<string>(orgId);
   const [hackathons, setHackathons] = useState<HackathonDetailResponse[]>([]);
+  const [dashboard, setDashboard] = useState<OrganizationDashboardResponse | null>(null);
   const [total, setTotal] = useState<number>(0);
   const [page, setPage] = useState<number>(1);
   const [totalPages, setTotalPages] = useState<number>(1);
@@ -41,6 +40,8 @@ export default function TenantHackathonsPage({
 
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [startDateAfter, setStartDateAfter] = useState('');
+  const [startDateBefore, setStartDateBefore] = useState('');
   const [sortBy, setSortBy] = useState<string>('created_at');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
 
@@ -85,6 +86,12 @@ export default function TenantHackathonsPage({
           status: statusFilter !== 'all' ? (statusFilter as HackathonStatus) : undefined,
           sort_by: sortBy,
           sort_order: sortOrder,
+          start_date_after: startDateAfter
+            ? new Date(`${startDateAfter}T00:00:00Z`).toISOString()
+            : undefined,
+          start_date_before: startDateBefore
+            ? new Date(`${startDateBefore}T23:59:59Z`).toISOString()
+            : undefined,
         },
         { signal }
       );
@@ -106,7 +113,7 @@ export default function TenantHackathonsPage({
         setIsLoading(false);
       }
     }
-  }, [orgId, page, limit, searchQuery, statusFilter, sortBy, sortOrder]);
+  }, [orgId, page, limit, searchQuery, statusFilter, sortBy, sortOrder, startDateAfter, startDateBefore]);
 
   useEffect(() => {
     loadHackathons(false);
@@ -116,6 +123,20 @@ export default function TenantHackathonsPage({
       }
     };
   }, [loadHackathons]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    api.getTenantOrganizationDashboard(orgId, { signal: controller.signal })
+      .then((result) => {
+        if (!controller.signal.aborted) setDashboard(result);
+      })
+      .catch((err: unknown) => {
+        if (!controller.signal.aborted) {
+          setError(err instanceof ApiClientError ? err.message : 'Failed to load hackathon analytics.');
+        }
+      });
+    return () => controller.abort();
+  }, [orgId]);
 
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -209,6 +230,27 @@ export default function TenantHackathonsPage({
             <option value="archived">Archived</option>
           </select>
 
+          <label className="flex items-center gap-2 text-[11px] text-text-muted">
+            From
+            <input
+              type="date"
+              value={startDateAfter}
+              onChange={(e) => { setStartDateAfter(e.target.value); setPage(1); }}
+              className="min-w-0 rounded-lg border border-surface-border bg-surface-elevated px-2 py-2 text-xs text-text-primary"
+              aria-label="Hackathon start date from"
+            />
+          </label>
+          <label className="flex items-center gap-2 text-[11px] text-text-muted">
+            To
+            <input
+              type="date"
+              value={startDateBefore}
+              onChange={(e) => { setStartDateBefore(e.target.value); setPage(1); }}
+              className="min-w-0 rounded-lg border border-surface-border bg-surface-elevated px-2 py-2 text-xs text-text-primary"
+              aria-label="Hackathon start date to"
+            />
+          </label>
+
           <select
             value={`${sortBy}:${sortOrder}`}
             onChange={(e) => {
@@ -233,10 +275,14 @@ export default function TenantHackathonsPage({
           <table className="w-full text-left border-collapse text-xs">
             <thead>
               <tr className="border-b border-surface-border bg-surface-elevated/50 text-text-muted uppercase text-[10px] tracking-wider font-semibold">
-                <th className="py-3 px-4">Event</th>
+                <th className="py-3 px-4">Hackathon</th>
                 <th className="py-3 px-4">Status</th>
-                <th className="py-3 px-4">Timeline Window</th>
-                <th className="py-3 px-4">Submission Cutoff</th>
+                <th className="py-3 px-4">Start Date</th>
+                <th className="py-3 px-4">End Date</th>
+                <th className="py-3 px-4">Organizer</th>
+                <th className="py-3 px-4">Teams</th>
+                <th className="py-3 px-4">Submissions</th>
+                <th className="py-3 px-4">Evaluation Progress</th>
                 <th className="py-3 px-4 text-right">Actions</th>
               </tr>
             </thead>
@@ -244,27 +290,15 @@ export default function TenantHackathonsPage({
               {isLoading || hackathons.some((h) => h.organization_id !== orgId) ? (
                 Array.from({ length: 4 }).map((_, idx) => (
                   <tr key={`skel-${idx}`} className="animate-pulse">
-                    <td className="py-3.5 px-4">
-                      <div className="h-3.5 bg-surface-elevated rounded w-40 mb-1.5" />
-                      <div className="h-2.5 bg-surface-elevated rounded w-24" />
-                    </td>
-                    <td className="py-3.5 px-4">
-                      <div className="h-5 bg-surface-elevated rounded-full w-16" />
-                    </td>
-                    <td className="py-3.5 px-4">
-                      <div className="h-3.5 bg-surface-elevated rounded w-32" />
-                    </td>
-                    <td className="py-3.5 px-4">
-                      <div className="h-3.5 bg-surface-elevated rounded w-28" />
-                    </td>
-                    <td className="py-3.5 px-4 text-right">
-                      <div className="h-6 bg-surface-elevated rounded w-16 ml-auto" />
-                    </td>
+                    <td className="py-3.5 px-4"><div className="h-3.5 bg-surface-elevated rounded w-40 mb-1.5" /><div className="h-2.5 bg-surface-elevated rounded w-24" /></td>
+                    <td className="py-3.5 px-4"><div className="h-5 bg-surface-elevated rounded-full w-16" /></td>
+                    {Array.from({ length: 6 }).map((_, cell) => <td key={cell} className="py-3.5 px-4"><div className="h-3.5 bg-surface-elevated rounded w-24" /></td>)}
+                    <td className="py-3.5 px-4 text-right"><div className="h-6 bg-surface-elevated rounded w-16 ml-auto" /></td>
                   </tr>
                 ))
               ) : hackathons.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="py-12 text-center text-text-muted">
+                  <td colSpan={9} className="py-12 text-center text-text-muted">
                     <Trophy className="w-8 h-8 mx-auto text-text-muted/40 mb-2" />
                     <p className="text-sm font-medium text-text-secondary">No hackathons hosted yet</p>
                     <p className="text-xs mt-1">Ready to host your first event? Create one below.</p>
@@ -296,25 +330,34 @@ export default function TenantHackathonsPage({
                       <StatusBadge status={h.status} size="sm" />
                     </td>
                     <td className="py-3.5 px-4 text-text-muted whitespace-nowrap">
-                      <div className="flex items-center gap-1.5">
-                        <Calendar className="w-3 h-3" />
-                        <span>
-                          {new Date(h.start_date).toLocaleDateString()} — {new Date(h.end_date).toLocaleDateString()}
-                        </span>
-                      </div>
+                      <span>{new Date(h.start_date).toLocaleDateString()}</span>
                     </td>
                     <td className="py-3.5 px-4 text-text-muted whitespace-nowrap">
-                      <div className="flex items-center gap-1.5">
-                        <Clock className="w-3 h-3" />
-                        <span>{new Date(h.submission_deadline).toLocaleString()}</span>
-                      </div>
+                      <span>{new Date(h.end_date).toLocaleDateString()}</span>
+                    </td>
+                    <td className="py-3.5 px-4 text-text-secondary">
+                      {dashboard?.hackathons.find((item) => item.id === h.id)?.organizer_name || 'Not available'}
+                    </td>
+                    <td className="py-3.5 px-4 text-text-secondary">
+                      {dashboard?.hackathons.find((item) => item.id === h.id)?.team_count ?? '—'}
+                    </td>
+                    <td className="py-3.5 px-4 text-text-secondary">
+                      {dashboard?.hackathons.find((item) => item.id === h.id)?.submission_count ?? '—'}
+                    </td>
+                    <td className="py-3.5 px-4 text-text-secondary">
+                      {(() => {
+                        const event = dashboard?.hackathons.find((item) => item.id === h.id);
+                        if (!event) return '—';
+                        if (!event.evaluation_total) return 'No evaluations';
+                        return `${event.evaluation_completed} / ${event.evaluation_total} (${Math.round((event.evaluation_completed / event.evaluation_total) * 100)}%)`;
+                      })()}
                     </td>
                     <td className="py-3.5 px-4 text-right">
                       <Link
                         href={`/organizations/${orgId}/hackathons/${h.id}`}
                         className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-text-primary bg-surface-elevated hover:bg-surface-hover border border-surface-border rounded-lg transition-colors"
                       >
-                        <span>Manage</span>
+                        <span>Open</span>
                       </Link>
                     </td>
                   </tr>

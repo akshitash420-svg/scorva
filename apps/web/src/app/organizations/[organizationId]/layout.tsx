@@ -14,6 +14,11 @@ import {
   AlertCircle,
   Menu,
   X,
+  LayoutDashboard,
+  Users,
+  BarChart3,
+  History,
+  Settings,
 } from 'lucide-react';
 import { api, ApiClientError } from '@/lib/api-client';
 import { OrganizationProfileResponse } from '@/types/api';
@@ -89,14 +94,39 @@ export default function TenantOrganizationLayout({
 
   const navLinks = [
     {
+      title: 'Overview',
+      href: `/organizations/${orgId}`,
+      icon: LayoutDashboard,
+    },
+    {
       title: 'Hackathons',
       href: `/organizations/${orgId}/hackathons`,
       icon: Trophy,
     },
     {
+      title: 'Teams',
+      href: `/organizations/${orgId}/teams`,
+      icon: Users,
+    },
+    {
+      title: 'Analytics',
+      href: `/organizations/${orgId}/analytics`,
+      icon: BarChart3,
+    },
+    {
+      title: 'Activity History',
+      href: `/organizations/${orgId}/activity`,
+      icon: History,
+    },
+    {
       title: 'Organization Profile',
-      href: `/organizations/${orgId}`,
+      href: `/organizations/${orgId}/profile`,
       icon: Building2,
+    },
+    {
+      title: 'Settings',
+      href: `/organizations/${orgId}/settings`,
+      icon: Settings,
     },
   ];
 
@@ -131,28 +161,6 @@ export default function TenantOrganizationLayout({
             </div>
           )}
         </div>
-
-        {/* Center / Navigation Links (Desktop) */}
-        <nav className="hidden md:flex items-center gap-1">
-          {navLinks.map((item) => {
-            const active = pathname === item.href || (item.href.includes('/hackathons') && pathname.startsWith(item.href));
-            const Icon = item.icon;
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                  active
-                    ? 'bg-primary text-white shadow-xs'
-                    : 'text-text-secondary hover:text-text-primary hover:bg-surface-elevated'
-                }`}
-              >
-                <Icon className="w-3.5 h-3.5" />
-                <span>{item.title}</span>
-              </Link>
-            );
-          })}
-        </nav>
 
         {/* Right Controls */}
         <div className="flex items-center gap-3">
@@ -220,8 +228,34 @@ export default function TenantOrganizationLayout({
         </div>
       )}
 
-      {/* Main Tenant Container */}
-      <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto w-full">
+      <div className="flex flex-1 min-h-0">
+        <aside className="hidden md:flex md:w-60 lg:w-64 shrink-0 flex-col border-r border-surface-border bg-surface px-3 py-5">
+          <nav className="space-y-1" aria-label="Organization navigation">
+            {navLinks.map((item) => {
+              const active =
+                pathname === item.href ||
+                (item.title === 'Hackathons' && pathname.startsWith(item.href));
+              const Icon = item.icon;
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors ${
+                    active
+                      ? 'bg-primary/10 text-primary border border-primary/20'
+                      : 'text-text-secondary hover:text-text-primary hover:bg-surface-elevated'
+                  }`}
+                >
+                  <Icon className="w-4 h-4 shrink-0" />
+                  <span>{item.title}</span>
+                </Link>
+              );
+            })}
+          </nav>
+        </aside>
+
+        {/* Main Tenant Container */}
+        <main className="flex-1 min-w-0 p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto w-full">
         {error ? (
           <div className="p-8 bg-surface rounded-2xl border border-surface-border text-center max-w-md mx-auto my-12">
             <AlertCircle className="w-10 h-10 text-status-error mx-auto mb-3" />
@@ -238,7 +272,8 @@ export default function TenantOrganizationLayout({
         ) : (
           children
         )}
-      </main>
+        </main>
+      </div>
     </div>
   );
 }

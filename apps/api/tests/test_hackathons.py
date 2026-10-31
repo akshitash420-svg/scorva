@@ -5,7 +5,8 @@ from httpx import AsyncClient
 from sqlalchemy import select
 
 from apps.api.config import settings
-from apps.api.modules.audit.models import AuditEvent
+from apps.api.modules.audit.models import AuditEvent, AuditOutcome
+from apps.api.modules.evaluations.models import Team, TeamMember
 from apps.api.modules.hackathons.models import Hackathon, HackathonStatus
 from apps.api.modules.organizations.models import (
     MembershipStatus,
@@ -144,6 +145,187 @@ async def hackathon_test_setup(db_session, create_user_helper, create_session_he
         "org_a": org_a,
         "org_b": org_b,
     }
+
+
+@pytest.mark.asyncio
+async def test_organization_dashboard_and_teams_are_tenant_scoped(
+    client: AsyncClient, db_session, hackathon_test_setup
+):
+    s = hackathon_test_setup
+    now = datetime.now(timezone.utc)
+    hackathon_a = Hackathon(
+        id=uuid.uuid4(),
+        organization_id=s["org_a"].id,
+        title="Alpha Event",
+        slug=f"alpha-event-{s['suffix']}",
+        status=HackathonStatus.PUBLISHED,
+        start_date=now + timedelta(days=1),
+        submission_deadline=now + timedelta(days=2),
+        end_date=now + timedelta(days=3),
+        created_by_user_id=s["alice"].id,
+        settings={},
+    )
+    hackathon_b = Hackathon(
+        id=uuid.uuid4(),
+        organization_id=s["org_b"].id,
+        title="Beta Event",
+        slug=f"beta-event-{s['suffix']}",
+        status=HackathonStatus.PUBLISHED,
+        start_date=now + timedelta(days=1),
+        submission_deadline=now + timedelta(days=2),
+        end_date=now + timedelta(days=3),
+        created_by_user_id=s["frank"].id,
+        settings={},
+    )
+    team_a = Team(
+        id=uuid.uuid4(),
+        organization_id=s["org_a"].id,
+        hackathon_id=hackathon_a.id,
+        name="Alpha Team",
+        join_code=f"alpha-{s['suffix']}",
+        created_by_user_id=s["alice"].id,
+    )
+    team_b = Team(
+        id=uuid.uuid4(),
+        organization_id=s["org_b"].id,
+        hackathon_id=hackathon_b.id,
+        name="Beta Team",
+        join_code=f"beta-{s['suffix']}",
+        created_by_user_id=s["frank"].id,
+    )
+    db_session.add_all([hackathon_a, hackathon_b])
+    await db_session.flush()
+    db_session.add_all([team_a, team_b])
+    await db_session.flush()
+    db_session.add_all([
+        TeamMember(team_id=team_a.id, user_id=s["alice"].id, role_in_team="leader"),
+        TeamMember(team_id=team_b.id, user_id=s["frank"].id, role_in_team="leader"),
+    ])
+    await db_session.commit()
+
+    dashboard = await client.get(
+        f"/api/v1/organizations/{s['org_a'].id}/dashboard",
+        cookies={settings.SESSION_COOKIE_NAME: s["alice_token"]},
+    )
+    assert dashboard.status_code == 200
+    body = dashboard.json()
+    assert body["total_hackathons"] == 1
+    assert body["total_teams"] == 1
+    assert [event["title"] for event in body["hackathons"]] == ["Alpha Event"]
+
+    team_page = await client.get(
+        f"/api/v1/organizations/{s['org_a'].id}/teams",
+        cookies={settings.SESSION_COOKIE_NAME: s["alice_token"]},
+    )
+    assert team_page.status_code == 200
+    assert team_page.json()["total"] == 1
+    assert [team["name"] for team in team_page.json()["items"]] == ["Alpha Team"]
+
+    team_detail = await client.get(
+        f"/api/v1/organizations/{s['org_a'].id}/teams/{team_a.id}",
+        cookies={settings.SESSION_COOKIE_NAME: s["alice_token"]},
+    )
+    assert team_detail.status_code == 200
+    assert team_detail.json()["hackathon_name"] == "Alpha Event"
+    assert team_detail.json()["members"][0]["email"] == s["alice"].email
+
+    cross_tenant_team = await client.get(
+        f"/api/v1/organizations/{s['org_a'].id}/teams/{team_b.id}",
+        cookies={settings.SESSION_COOKIE_NAME: s["alice_token"]},
+    )
+    assert cross_tenant_team.status_code == 404
+
+    cross_tenant_dashboard = await client.get(
+        f"/api/v1/organizations/{s['org_a'].id}/dashboard",
+        cookies={settings.SESSION_COOKIE_NAME: s["frank_token"]},
+    )
+    assert cross_tenant_dashboard.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_organization_settings_validate_authorization_and_audit(
+    client: AsyncClient, db_session, hackathon_test_setup
+):
+    s = hackathon_test_setup
+    url = f"/api/v1/organizations/{s['org_a'].id}/settings"
+    invalid = await client.patch(
+        url,
+        json={"timezone": "Not/A_Real_Zone"},
+        cookies={settings.SESSION_COOKIE_NAME: s["alice_token"]},
+        headers=ORIGIN_HEADER,
+    )
+    assert invalid.status_code == 422
+
+    forbidden_quota = await client.patch(
+        url,
+        json={"max_hackathons": 9},
+        cookies={settings.SESSION_COOKIE_NAME: s["bob_token"]},
+        headers=ORIGIN_HEADER,
+    )
+    assert forbidden_quota.status_code == 403
+    legacy_route_quota = await client.patch(
+        f"/api/v1/organizations/{s['org_a'].id}",
+        json={"settings": {"max_hackathons": 9}},
+        cookies={settings.SESSION_COOKIE_NAME: s["bob_token"]},
+        headers=ORIGIN_HEADER,
+    )
+    assert legacy_route_quota.status_code == 403
+
+    updated = await client.patch(
+        url,
+        json={"timezone": "Europe/London", "max_hackathons": 9},
+        cookies={settings.SESSION_COOKIE_NAME: s["alice_token"]},
+        headers=ORIGIN_HEADER,
+    )
+    assert updated.status_code == 200
+    assert updated.json()["settings"] == {
+        "timezone": "Europe/London",
+        "max_hackathons": 9,
+    }
+
+    audit = await db_session.execute(
+        select(AuditEvent).where(
+            AuditEvent.organization_id == s["org_a"].id,
+            AuditEvent.action == "org_settings_updated",
+        )
+    )
+    assert audit.scalar_one_or_none() is not None
+
+
+@pytest.mark.asyncio
+async def test_organization_activity_does_not_expose_sensitive_audit_metadata(
+    client: AsyncClient, db_session, hackathon_test_setup
+):
+    s = hackathon_test_setup
+    event = AuditEvent(
+        id=uuid.uuid4(),
+        actor_user_id=s["alice"].id,
+        actor_email=s["alice"].email,
+        actor_role="org_owner",
+        action="org_profile_updated",
+        resource_type="organization",
+        resource_id=str(s["org_a"].id),
+        organization_id=s["org_a"].id,
+        outcome=AuditOutcome.SUCCESS,
+        reason="Organization profile updated",
+        diff_payload={"private_repository": "https://github.com/private/project"},
+        ip_address="192.0.2.1",
+        user_agent="private browser metadata",
+        correlation_id=uuid.uuid4(),
+    )
+    db_session.add(event)
+    await db_session.commit()
+
+    response = await client.get(
+        f"/api/v1/organizations/{s['org_a'].id}/activity",
+        cookies={settings.SESSION_COOKIE_NAME: s["alice_token"]},
+    )
+    assert response.status_code == 200
+    serialized = response.text
+    assert "private_repository" not in serialized
+    assert "ip_address" not in serialized
+    assert "user_agent" not in serialized
+    assert "private browser metadata" not in serialized
 
 
 # =====================================================================

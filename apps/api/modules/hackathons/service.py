@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 import math
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 import uuid
 from fastapi import status
@@ -79,6 +80,8 @@ async def list_tenant_hackathons(
     hackathon_status: Optional[HackathonStatus] = None,
     sort_by: str = "created_at",
     sort_order: str = "desc",
+    start_date_after: Optional[datetime] = None,
+    start_date_before: Optional[datetime] = None,
 ) -> Tuple[List[HackathonDetailResponse], int, int]:
     """Lists hackathons owned strictly by the authorized organization (§8.2)."""
     filters = [
@@ -94,6 +97,10 @@ async def list_tenant_hackathons(
 
     if hackathon_status:
         filters.append(Hackathon.status == hackathon_status)
+    if start_date_after:
+        filters.append(Hackathon.start_date >= start_date_after)
+    if start_date_before:
+        filters.append(Hackathon.start_date <= start_date_before)
 
     count_stmt = select(func.count(Hackathon.id)).where(*filters)
     total = (await db.execute(count_stmt)).scalar() or 0
@@ -1105,4 +1112,3 @@ async def unpublish_hackathon_results(
 
     await db.commit()
     return await get_hackathon_detail(db, org_id, hackathon_id)
-

@@ -1,6 +1,8 @@
 from typing import List
 import uuid
-from fastapi import APIRouter, Depends, Request, status
+from datetime import datetime
+from typing import Optional
+from fastapi import APIRouter, Depends, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.core.database import get_db_session
@@ -12,6 +14,20 @@ from apps.api.dependencies import (
     require_org_owner,
 )
 from apps.api.modules.organizations.models import OrgRole
+from apps.api.modules.organizations.dashboard_schemas import (
+    OrganizationActivityResponse,
+    OrganizationDashboardResponse,
+    OrganizationTeamDetailResponse,
+    OrganizationTeamPage,
+    UpdateOrganizationSettingsRequest,
+)
+from apps.api.modules.organizations.dashboard_service import (
+    get_organization_dashboard,
+    get_organization_team,
+    list_organization_activity,
+    list_organization_teams,
+    update_organization_settings,
+)
 from apps.api.modules.organizations.schemas import (
     InviteMemberRequest,
     MemberOperationResponse,
@@ -38,6 +54,136 @@ def _extract_telemetry(request: Request):
     user_agent = request.headers.get("user-agent", "Unknown")
     correlation_id = getattr(request.state, "correlation_id", None)
     return ip_address, user_agent, correlation_id
+
+
+@router.get("/dashboard", response_model=OrganizationDashboardResponse)
+async def get_dashboard(
+    tenant: TenantContext = Depends(require_org_member),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Returns organization-scoped dashboard metrics and hackathon summaries."""
+    return await get_organization_dashboard(
+        db=db,
+        org=tenant.organization,
+        role=tenant.role,
+    )
+
+
+@router.get("/teams", response_model=OrganizationTeamPage)
+async def get_organization_teams(
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    search: Optional[str] = Query(None, max_length=150),
+    hackathon_id: Optional[uuid.UUID] = Query(None),
+    submission_status: Optional[str] = Query(
+        None,
+        pattern="^(submitted|no_submission|pending|evaluated|flagged|withdrawn)$",
+    ),
+    evaluation_status: Optional[str] = Query(
+        None,
+        pattern="^(completed|pending|in_progress|failed|not_started)$",
+    ),
+    sort_by: str = Query("registered_at", pattern="^(name|hackathon|registered_at|member_count)$"),
+    sort_order: str = Query("desc", pattern="^(asc|desc)$"),
+    tenant: TenantContext = Depends(require_org_member),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Returns paginated teams belonging only to the authorized organization."""
+    items, total, total_pages = await list_organization_teams(
+        db=db,
+        org_id=tenant.organization.id,
+        page=page,
+        limit=limit,
+        search=search,
+        hackathon_id=hackathon_id,
+        submission_status=submission_status,
+        evaluation_status=evaluation_status,
+        sort_by=sort_by,
+        sort_order=sort_order,
+    )
+    return OrganizationTeamPage(
+        items=items,
+        total=total,
+        page=page,
+        limit=limit,
+        total_pages=total_pages,
+    )
+
+
+@router.get("/teams/{team_id}", response_model=OrganizationTeamDetailResponse)
+async def get_organization_team_detail(
+    team_id: uuid.UUID,
+    tenant: TenantContext = Depends(require_org_member),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Returns team details only when its organization matches the tenant."""
+    return await get_organization_team(
+        db=db,
+        org_id=tenant.organization.id,
+        team_id=team_id,
+    )
+
+
+@router.get("/activity", response_model=OrganizationActivityResponse)
+async def get_organization_activity(
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    activity_type: Optional[str] = Query(None, max_length=100),
+    actor: Optional[str] = Query(None, max_length=255),
+    start_date: Optional[datetime] = Query(None),
+    end_date: Optional[datetime] = Query(None),
+    hackathon_id: Optional[uuid.UUID] = Query(None),
+    tenant: TenantContext = Depends(require_org_member),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Returns non-sensitive audit events scoped to the authorized organization."""
+    return await list_organization_activity(
+        db=db,
+        org_id=tenant.organization.id,
+        page=page,
+        limit=limit,
+        activity_type=activity_type,
+        actor=actor,
+        start_date=start_date,
+        end_date=end_date,
+        hackathon_id=hackathon_id,
+    )
+
+
+@router.patch("/settings", response_model=OrganizationProfileResponse)
+async def patch_organization_settings(
+    data: UpdateOrganizationSettingsRequest,
+    request: Request,
+    tenant: TenantContext = Depends(require_org_admin),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Validates and saves supported organization settings with audit logging."""
+    ip, ua, corr_id = _extract_telemetry(request)
+    org = await update_organization_settings(
+        db=db,
+        org=tenant.organization,
+        role=tenant.role,
+        actor=tenant.user,
+        payload=data,
+        ip_address=ip,
+        user_agent=ua,
+        correlation_id=corr_id,
+    )
+    return OrganizationProfileResponse(
+        id=org.id,
+        name=org.name,
+        slug=org.slug,
+        status=org.status,
+        owner_id=org.owner_id,
+        settings={
+            key: org.settings[key]
+            for key in ("timezone", "max_hackathons")
+            if key in (org.settings or {})
+        },
+        current_user_role=tenant.role,
+        created_at=org.created_at,
+        updated_at=org.updated_at,
+    )
 
 
 @router.get("", response_model=OrganizationProfileResponse)
